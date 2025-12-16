@@ -19,7 +19,7 @@ Enable Opencode to authenticate against **Antigravity** (Google's IDE) via OAuth
 
 ```json
 {
-  "plugin": ["opencode-antigravity-auth@1.0.7"]
+  "plugin": ["opencode-antigravity-auth@1.1.0"]
 }
 ```
 
