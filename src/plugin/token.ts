@@ -1,8 +1,4 @@
-import {
-  ANTIGRAVITY_CLIENT_ID,
-  ANTIGRAVITY_CLIENT_SECRET,
-  ANTIGRAVITY_PROVIDER_ID,
-} from "../constants";
+import { ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET } from "../constants";
 import { formatRefreshParts, parseRefreshParts } from "./auth";
 import { clearCachedAuth, storeCachedAuth } from "./cache";
 import { invalidateProjectContextCache } from "./project";
@@ -58,6 +54,28 @@ function parseOAuthErrorPayload(text: string | undefined): { code?: string; desc
   }
 }
 
+export class AntigravityTokenRefreshError extends Error {
+  code?: string;
+  description?: string;
+  status: number;
+  statusText: string;
+
+  constructor(options: {
+    message: string;
+    code?: string;
+    description?: string;
+    status: number;
+    statusText: string;
+  }) {
+    super(options.message);
+    this.name = "AntigravityTokenRefreshError";
+    this.code = options.code;
+    this.description = options.description;
+    this.status = options.status;
+    this.statusText = options.statusText;
+  }
+}
+
 /**
  * Refreshes an Antigravity OAuth access token, updates persisted credentials, and handles revocation.
  */
@@ -96,32 +114,24 @@ export async function refreshAccessToken(
       const { code, description } = parseOAuthErrorPayload(errorText);
       const details = [code, description ?? errorText].filter(Boolean).join(": ");
       const baseMessage = `Antigravity token refresh failed (${response.status} ${response.statusText})`;
-      console.warn(`[Antigravity OAuth] ${details ? `${baseMessage} - ${details}` : baseMessage}`);
+      const message = details ? `${baseMessage} - ${details}` : baseMessage;
+      console.warn(`[Antigravity OAuth] ${message}`);
 
       if (code === "invalid_grant") {
         console.warn(
-          "[Antigravity OAuth] Google revoked the stored refresh token. Run `opencode auth login` and reauthenticate the Google provider.",
+          "[Antigravity OAuth] Google revoked the stored refresh token for this account. Reauthenticate it via `opencode auth login`.",
         );
         invalidateProjectContextCache(auth.refresh);
-        try {
-          const clearedAuth: OAuthAuthDetails = {
-            type: "oauth",
-            refresh: formatRefreshParts({
-              refreshToken: "",
-              projectId: parts.projectId,
-              managedProjectId: parts.managedProjectId,
-            }),
-          };
-          await client.auth.set({
-            path: { id: providerId },
-            body: clearedAuth,
-          });
-        } catch (storeError) {
-          console.error("Failed to clear stored Antigravity OAuth credentials:", storeError);
-        }
+        clearCachedAuth(auth.refresh);
       }
 
-      return undefined;
+      throw new AntigravityTokenRefreshError({
+        message,
+        code,
+        description: description ?? errorText,
+        status: response.status,
+        statusText: response.statusText,
+      });
     }
 
     const payload = (await response.json()) as {
@@ -146,17 +156,11 @@ export async function refreshAccessToken(
     storeCachedAuth(updatedAuth);
     invalidateProjectContextCache(auth.refresh);
 
-    try {
-      await client.auth.set({
-        path: { id: providerId },
-        body: updatedAuth,
-      });
-    } catch (storeError) {
-      console.error("Failed to persist refreshed Antigravity OAuth credentials:", storeError);
-    }
-
     return updatedAuth;
   } catch (error) {
+    if (error instanceof AntigravityTokenRefreshError) {
+      throw error;
+    }
     console.error("Failed to refresh Antigravity access token due to an unexpected error:", error);
     return undefined;
   }

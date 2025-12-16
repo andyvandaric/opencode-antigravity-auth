@@ -6,10 +6,12 @@ Enable Opencode to authenticate against **Antigravity** (Google's IDE) via OAuth
 
 ## What you get
 
-- **Google OAuth sign-in** with automatic token refresh
+- **Google OAuth sign-in** (multi-account via `opencode auth login`) with automatic token refresh
+- **Multi-account load balancing** Automatically cycle through multiple Google accounts to maximize rate limits
+- **Automatic endpoint fallback** between Antigravity API endpoints (daily → autopush → prod)
 - **Antigravity API compatibility** for OpenAI-style requests
 - **Debug logging** for requests and responses
-- **Drop-in setup**—Opencode auto-installs the plugin from config
+- **Drop-in setup** Opencode auto-installs the plugin from config
 
 ## Quick start
 
@@ -17,15 +19,17 @@ Enable Opencode to authenticate against **Antigravity** (Google's IDE) via OAuth
 
 ```json
 {
-  "plugin": ["opencode-antigravity-auth@1.0.6"]
+  "plugin": ["opencode-antigravity-auth@1.0.7"]
 }
 ```
 
 2) **Authenticate**
 
-- Run `opencode auth login`.
+- For multi-account + per-account project IDs (recommended): run `opencode auth login`.
+- For a quick single-account connect: open `opencode` and run `/connect`.
 - Choose Google → **OAuth with Google (Antigravity)**.
-- Sign in via the browser and return to Opencode. If the browser doesn’t open, use the printed link.
+- Sign in via the browser and return to Opencode. If the browser doesn’t open, use the displayed link.
+- `opencode auth login` will ask for a project ID for each account, and after each sign-in you can add another account (up to 10).
 
 3) **Declare the models you want**
 
@@ -89,6 +93,14 @@ Add Antigravity models under the `provider.google.models` section of your config
 ```bash
 opencode run "Hello world" --model=google/gemini-3-pro-high
 ```
+
+## Multi-account load balancing
+
+- Account pool is stored in `~/.config/opencode/antigravity-accounts.json` (or `%APPDATA%/opencode/antigravity-accounts.json` on Windows).
+- This file contains OAuth refresh tokens; treat it like a password and don’t share/commit it.
+- TUI `/connect` only supports single-account sign-in (no per-account project ID prompts). Use `opencode auth login` to add multiple accounts or set per-account project IDs.
+- Each request picks the next account round-robin; on HTTP `429` the account is cooled down and the request retries with the next account.
+- If Google revokes a refresh token (`invalid_grant`), that account is removed from the pool; rerun `opencode auth login` to add it back.
 
 ## Debugging
 

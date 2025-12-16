@@ -1,13 +1,9 @@
 import { exec } from "node:child_process";
-import {
-  ANTIGRAVITY_ENDPOINT_FALLBACKS,
-  ANTIGRAVITY_PROVIDER_ID,
-  ANTIGRAVITY_REDIRECT_URI,
-} from "./constants";
+import { ANTIGRAVITY_ENDPOINT_FALLBACKS, ANTIGRAVITY_PROVIDER_ID } from "./constants";
 import { authorizeAntigravity, exchangeAntigravity } from "./antigravity/oauth";
 import type { AntigravityTokenExchangeResult } from "./antigravity/oauth";
-import { accessTokenExpired, isOAuthAuth } from "./plugin/auth";
-import { promptProjectId } from "./plugin/cli";
+import { accessTokenExpired, isOAuthAuth, parseRefreshParts } from "./plugin/auth";
+import { promptAddAnotherAccount, promptProjectId } from "./plugin/cli";
 import { ensureProjectContext } from "./plugin/project";
 import { startAntigravityDebugRequest } from "./plugin/debug";
 import {
@@ -15,8 +11,10 @@ import {
   prepareAntigravityRequest,
   transformAntigravityResponse,
 } from "./plugin/request";
-import { refreshAccessToken } from "./plugin/token";
+import { AntigravityTokenRefreshError, refreshAccessToken } from "./plugin/token";
 import { startOAuthListener, type OAuthListener } from "./plugin/server";
+import { loadAccounts, saveAccounts } from "./plugin/storage";
+import { AccountManager } from "./plugin/accounts";
 import type {
   GetAuth,
   LoaderResult,
@@ -25,6 +23,181 @@ import type {
   ProjectContextResult,
   Provider,
 } from "./plugin/types";
+
+const MAX_OAUTH_ACCOUNTS = 10;
+
+async function openBrowser(url: string): Promise<void> {
+  try {
+    if (process.platform === "darwin") {
+      exec(`open "${url}"`);
+      return;
+    }
+    if (process.platform === "win32") {
+      exec(`start "${url}"`);
+      return;
+    }
+    exec(`xdg-open "${url}"`);
+  } catch {
+    // ignore
+  }
+}
+
+async function promptOAuthCallbackValue(message: string): Promise<string> {
+  const { createInterface } = await import("node:readline/promises");
+  const { stdin, stdout } = await import("node:process");
+  const rl = createInterface({ input: stdin, output: stdout });
+  try {
+    return (await rl.question(message)).trim();
+  } finally {
+    rl.close();
+  }
+}
+
+type OAuthCallbackParams = { code: string; state: string };
+
+function getStateFromAuthorizationUrl(authorizationUrl: string): string {
+  try {
+    return new URL(authorizationUrl).searchParams.get("state") ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function extractOAuthCallbackParams(url: URL): OAuthCallbackParams | null {
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  if (!code || !state) {
+    return null;
+  }
+  return { code, state };
+}
+
+function parseOAuthCallbackInput(
+  value: string,
+  fallbackState: string,
+): OAuthCallbackParams | { error: string } {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { error: "Missing authorization code" };
+  }
+
+  try {
+    const url = new URL(trimmed);
+    const code = url.searchParams.get("code");
+    const state = url.searchParams.get("state") ?? fallbackState;
+
+    if (!code) {
+      return { error: "Missing code in callback URL" };
+    }
+    if (!state) {
+      return { error: "Missing state in callback URL" };
+    }
+
+    return { code, state };
+  } catch {
+    if (!fallbackState) {
+      return { error: "Missing state. Paste the full redirect URL instead of only the code." };
+    }
+
+    return { code: trimmed, state: fallbackState };
+  }
+}
+
+function clampInt(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+async function persistAccountPool(
+  results: Array<Extract<AntigravityTokenExchangeResult, { type: "success" }>>,
+): Promise<void> {
+  if (results.length === 0) {
+    return;
+  }
+
+  const now = Date.now();
+  const stored = await loadAccounts();
+  const accounts = stored?.accounts ? [...stored.accounts] : [];
+
+  const indexByRefreshToken = new Map<string, number>();
+  for (let i = 0; i < accounts.length; i++) {
+    const token = accounts[i]?.refreshToken;
+    if (token) {
+      indexByRefreshToken.set(token, i);
+    }
+  }
+
+  for (const result of results) {
+    const parts = parseRefreshParts(result.refresh);
+    if (!parts.refreshToken) {
+      continue;
+    }
+
+    const existingIndex = indexByRefreshToken.get(parts.refreshToken);
+    if (existingIndex === undefined) {
+      indexByRefreshToken.set(parts.refreshToken, accounts.length);
+      accounts.push({
+        email: result.email,
+        refreshToken: parts.refreshToken,
+        projectId: parts.projectId,
+        managedProjectId: parts.managedProjectId,
+        addedAt: now,
+        lastUsed: now,
+        isRateLimited: false,
+        rateLimitResetTime: 0,
+      });
+      continue;
+    }
+
+    const existing = accounts[existingIndex];
+    if (!existing) {
+      continue;
+    }
+
+    accounts[existingIndex] = {
+      ...existing,
+      email: result.email ?? existing.email,
+      projectId: parts.projectId ?? existing.projectId,
+      managedProjectId: parts.managedProjectId ?? existing.managedProjectId,
+      lastUsed: now,
+    };
+  }
+
+  if (accounts.length === 0) {
+    return;
+  }
+
+  const activeIndex =
+    typeof stored?.activeIndex === "number" && Number.isFinite(stored.activeIndex) ? stored.activeIndex : 0;
+
+  await saveAccounts({
+    version: 1,
+    accounts,
+    activeIndex: clampInt(activeIndex, 0, accounts.length - 1),
+  });
+}
+
+function retryAfterMsFromResponse(response: Response): number {
+  const retryAfterMsHeader = response.headers.get("retry-after-ms");
+  if (retryAfterMsHeader) {
+    const parsed = Number.parseInt(retryAfterMsHeader, 10);
+    if (!Number.isNaN(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  const retryAfterHeader = response.headers.get("retry-after");
+  if (retryAfterHeader) {
+    const parsed = Number.parseInt(retryAfterHeader, 10);
+    if (!Number.isNaN(parsed) && parsed > 0) {
+      return parsed * 1000;
+    }
+  }
+
+  return 60_000;
+}
 
 /**
  * Creates an Antigravity OAuth plugin for a specific provider ID.
@@ -38,6 +211,15 @@ export const createAntigravityPlugin = (providerId: string) => async (
       const auth = await getAuth();
       if (!isOAuthAuth(auth)) {
         return null;
+      }
+
+      const accountManager = await AccountManager.loadFromDisk(auth);
+      if (accountManager.getAccountCount() > 0) {
+        try {
+          await accountManager.saveToDisk();
+        } catch (error) {
+          console.error("[opencode-antigravity-auth] Failed to persist initial account pool:", error);
+        }
       }
 
       if (provider.models) {
@@ -64,156 +246,238 @@ export const createAntigravityPlugin = (providerId: string) => async (
             return fetch(input, init);
           }
 
-          let authRecord = latestAuth;
-          if (accessTokenExpired(authRecord)) {
-            const refreshed = await refreshAccessToken(authRecord, client, providerId);
-            if (!refreshed) {
-              return fetch(input, init);
-            }
-            authRecord = refreshed;
+          const accountCount = accountManager.getAccountCount();
+          if (accountCount === 0) {
+            throw new Error("No Antigravity accounts configured. Run `opencode auth login`.");
           }
 
-          const accessToken = authRecord.access;
-          if (!accessToken) {
-            return fetch(input, init);
-          }
+          type FailureContext = {
+            response: Response;
+            streaming: boolean;
+            debugContext: ReturnType<typeof startAntigravityDebugRequest>;
+            requestedModel?: string;
+            projectId?: string;
+            endpoint?: string;
+            effectiveModel?: string;
+            toolDebugMissing?: number;
+            toolDebugSummary?: string;
+            toolDebugPayload?: string;
+          };
 
-          /**
-           * Ensures we have a usable project context for the current auth snapshot.
-           */
-          async function resolveProjectContext(): Promise<ProjectContextResult> {
-            try {
-              return await ensureProjectContext(authRecord, client, providerId);
-            } catch (error) {
-              throw error;
-            }
-          }
-
-          const projectContext = await resolveProjectContext();
-
-          // Endpoint fallback logic: try daily → autopush → prod
+          let lastFailure: FailureContext | null = null;
           let lastError: Error | null = null;
-          let lastResponse: Response | null = null;
 
-          for (let i = 0; i < ANTIGRAVITY_ENDPOINT_FALLBACKS.length; i++) {
-            const currentEndpoint = ANTIGRAVITY_ENDPOINT_FALLBACKS[i];
-            
+          accountLoop: for (let attempt = 0; attempt < accountCount; attempt++) {
+            const account = accountManager.pickNext();
+            if (!account) {
+              const waitMs = accountManager.getMinWaitTimeMs();
+              const waitSec = Math.max(1, Math.ceil(waitMs / 1000));
+              throw new Error(
+                `All ${accountManager.getAccountCount()} account(s) are rate-limited. Retry in ${waitSec}s or add more accounts via 'opencode auth login'.`,
+              );
+            }
+
             try {
-              const {
-                request,
-                init: transformedInit,
-                streaming,
-                requestedModel,
-                effectiveModel,
-                projectId: usedProjectId,
-                endpoint: usedEndpoint,
-                toolDebugMissing,
-                toolDebugSummary,
-                toolDebugPayload,
-              } = prepareAntigravityRequest(
-                input,
-                init,
-                accessToken,
-                projectContext.effectiveProjectId,
-                currentEndpoint,
-              );
-
-              const originalUrl = toUrlString(input);
-              const resolvedUrl = toUrlString(request);
-              const debugContext = startAntigravityDebugRequest({
-                originalUrl,
-                resolvedUrl,
-                method: transformedInit.method,
-                headers: transformedInit.headers,
-                body: transformedInit.body,
-                streaming,
-                projectId: projectContext.effectiveProjectId,
-              });
-
-              const response = await fetch(request, transformedInit);
-              
-              // Check if we should retry with next endpoint
-              const shouldRetry = (
-                response.status === 403 || // Forbidden
-                response.status === 404 || // Not Found
-                response.status === 429 || // Rate Limit
-                response.status >= 500     // Server errors
-              );
-
-              if (shouldRetry && i < ANTIGRAVITY_ENDPOINT_FALLBACKS.length - 1) {
-                // Try next endpoint
-                lastResponse = response;
-                continue;
-              }
-
-              // Success or final attempt - return transformed response
-              return transformAntigravityResponse(
-                response,
-                streaming,
-                debugContext,
-                requestedModel,
-                usedProjectId,
-                usedEndpoint,
-                effectiveModel,
-                toolDebugMissing,
-                toolDebugSummary,
-                toolDebugPayload,
-              );
+              await accountManager.saveToDisk();
             } catch (error) {
-              // Network error or other exception
-              if (i < ANTIGRAVITY_ENDPOINT_FALLBACKS.length - 1) {
+              console.error("[opencode-antigravity-auth] Failed to persist rotation state:", error);
+            }
+
+            let authRecord = accountManager.toAuthDetails(account);
+
+            if (accessTokenExpired(authRecord)) {
+              try {
+                const refreshed = await refreshAccessToken(authRecord, client, providerId);
+                if (!refreshed) {
+                  lastError = new Error("Antigravity token refresh failed");
+                  continue;
+                }
+                accountManager.updateFromAuth(account, refreshed);
+                authRecord = refreshed;
+                try {
+                  await accountManager.saveToDisk();
+                } catch (error) {
+                  console.error("[opencode-antigravity-auth] Failed to persist refreshed auth:", error);
+                }
+              } catch (error) {
+                if (error instanceof AntigravityTokenRefreshError && error.code === "invalid_grant") {
+                  const removed = accountManager.removeAccount(account);
+                  if (removed) {
+                    console.warn(
+                      "[opencode-antigravity-auth] Removed revoked account from pool. Reauthenticate it via `opencode auth login` to add it back.",
+                    );
+                    try {
+                      await accountManager.saveToDisk();
+                    } catch (persistError) {
+                      console.error(
+                        "[opencode-antigravity-auth] Failed to persist revoked account removal:",
+                        persistError,
+                      );
+                    }
+                  }
+
+                  if (accountManager.getAccountCount() === 0) {
+                    try {
+                      await client.auth.set({
+                        path: { id: providerId },
+                        body: { type: "oauth", refresh: "" },
+                      });
+                    } catch (storeError) {
+                      console.error("Failed to clear stored Antigravity OAuth credentials:", storeError);
+                    }
+
+                    throw new Error(
+                      "All Antigravity accounts have invalid refresh tokens. Run `opencode auth login` and reauthenticate.",
+                    );
+                  }
+
+                  lastError = error;
+                  continue;
+                }
+
                 lastError = error instanceof Error ? error : new Error(String(error));
                 continue;
               }
-              
-              // Final attempt failed, throw the error
-              throw error;
+            }
+
+            const accessToken = authRecord.access;
+            if (!accessToken) {
+              lastError = new Error("Missing access token");
+              continue;
+            }
+
+            let projectContext: ProjectContextResult;
+            try {
+              projectContext = await ensureProjectContext(authRecord);
+            } catch (error) {
+              lastError = error instanceof Error ? error : new Error(String(error));
+              continue;
+            }
+
+            if (projectContext.auth !== authRecord) {
+              accountManager.updateFromAuth(account, projectContext.auth);
+              authRecord = projectContext.auth;
+              try {
+                await accountManager.saveToDisk();
+              } catch (error) {
+                console.error("[opencode-antigravity-auth] Failed to persist project context:", error);
+              }
+            }
+
+            for (let i = 0; i < ANTIGRAVITY_ENDPOINT_FALLBACKS.length; i++) {
+              const currentEndpoint = ANTIGRAVITY_ENDPOINT_FALLBACKS[i];
+
+              try {
+                const prepared = prepareAntigravityRequest(
+                  input,
+                  init,
+                  accessToken,
+                  projectContext.effectiveProjectId,
+                  currentEndpoint,
+                );
+
+                const originalUrl = toUrlString(input);
+                const resolvedUrl = toUrlString(prepared.request);
+                const debugContext = startAntigravityDebugRequest({
+                  originalUrl,
+                  resolvedUrl,
+                  method: prepared.init.method,
+                  headers: prepared.init.headers,
+                  body: prepared.init.body,
+                  streaming: prepared.streaming,
+                  projectId: projectContext.effectiveProjectId,
+                });
+
+                const response = await fetch(prepared.request, prepared.init);
+
+                if (response.status === 429 && accountManager.getAccountCount() > 1) {
+                  const retryAfterMs = retryAfterMsFromResponse(response);
+                  accountManager.markRateLimited(account, retryAfterMs);
+                  try {
+                    await accountManager.saveToDisk();
+                  } catch (error) {
+                    console.error("[opencode-antigravity-auth] Failed to persist rate-limit state:", error);
+                  }
+
+                  lastFailure = {
+                    response,
+                    streaming: prepared.streaming,
+                    debugContext,
+                    requestedModel: prepared.requestedModel,
+                    projectId: prepared.projectId,
+                    endpoint: prepared.endpoint,
+                    effectiveModel: prepared.effectiveModel,
+                    toolDebugMissing: prepared.toolDebugMissing,
+                    toolDebugSummary: prepared.toolDebugSummary,
+                    toolDebugPayload: prepared.toolDebugPayload,
+                  };
+
+                  continue accountLoop;
+                }
+
+                const shouldRetry = (
+                  response.status === 403 ||
+                  response.status === 404 ||
+                  (response.status === 429 && accountManager.getAccountCount() <= 1) ||
+                  response.status >= 500
+                );
+
+                if (shouldRetry && i < ANTIGRAVITY_ENDPOINT_FALLBACKS.length - 1) {
+                  lastFailure = {
+                    response,
+                    streaming: prepared.streaming,
+                    debugContext,
+                    requestedModel: prepared.requestedModel,
+                    projectId: prepared.projectId,
+                    endpoint: prepared.endpoint,
+                    effectiveModel: prepared.effectiveModel,
+                    toolDebugMissing: prepared.toolDebugMissing,
+                    toolDebugSummary: prepared.toolDebugSummary,
+                    toolDebugPayload: prepared.toolDebugPayload,
+                  };
+                  continue;
+                }
+
+                return transformAntigravityResponse(
+                  response,
+                  prepared.streaming,
+                  debugContext,
+                  prepared.requestedModel,
+                  prepared.projectId,
+                  prepared.endpoint,
+                  prepared.effectiveModel,
+                  prepared.toolDebugMissing,
+                  prepared.toolDebugSummary,
+                  prepared.toolDebugPayload,
+                );
+              } catch (error) {
+                if (i < ANTIGRAVITY_ENDPOINT_FALLBACKS.length - 1) {
+                  lastError = error instanceof Error ? error : new Error(String(error));
+                  continue;
+                }
+
+                lastError = error instanceof Error ? error : new Error(String(error));
+                continue accountLoop;
+              }
             }
           }
 
-          // If we get here, all endpoints failed
-          if (lastResponse) {
-            // Return the last response even if it was an error
-            const {
-              streaming,
-              requestedModel,
-              effectiveModel,
-              projectId: usedProjectId,
-              endpoint: usedEndpoint,
-              toolDebugMissing,
-              toolDebugSummary,
-              toolDebugPayload,
-            } = prepareAntigravityRequest(
-              input,
-              init,
-              accessToken,
-              projectContext.effectiveProjectId,
-              ANTIGRAVITY_ENDPOINT_FALLBACKS[ANTIGRAVITY_ENDPOINT_FALLBACKS.length - 1],
-            );
-            const debugContext = startAntigravityDebugRequest({
-              originalUrl: toUrlString(input),
-              resolvedUrl: toUrlString(input),
-              method: init?.method,
-              headers: init?.headers,
-              body: init?.body,
-              streaming,
-              projectId: projectContext.effectiveProjectId,
-            });
+          if (lastFailure) {
             return transformAntigravityResponse(
-              lastResponse,
-              streaming,
-              debugContext,
-              requestedModel,
-              usedProjectId,
-              usedEndpoint,
-              effectiveModel,
-              toolDebugMissing,
-              toolDebugSummary,
-              toolDebugPayload,
+              lastFailure.response,
+              lastFailure.streaming,
+              lastFailure.debugContext,
+              lastFailure.requestedModel,
+              lastFailure.projectId,
+              lastFailure.endpoint,
+              lastFailure.effectiveModel,
+              lastFailure.toolDebugMissing,
+              lastFailure.toolDebugSummary,
+              lastFailure.toolDebugPayload,
             );
           }
-          
-          throw lastError || new Error("All Antigravity endpoints failed");
+
+          throw lastError || new Error("All Antigravity accounts failed");
         },
       };
     },
@@ -221,8 +485,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
       {
         label: "OAuth with Google (Antigravity)",
         type: "oauth",
-        authorize: async () => {
-
+        authorize: async (inputs) => {
           const isHeadless = !!(
             process.env.SSH_CONNECTION ||
             process.env.SSH_CLIENT ||
@@ -230,57 +493,169 @@ export const createAntigravityPlugin = (providerId: string) => async (
             process.env.OPENCODE_HEADLESS
           );
 
+          // CLI flow (`opencode auth login`) passes an inputs object.
+          if (inputs) {
+            const accounts: Array<Extract<AntigravityTokenExchangeResult, { type: "success" }>> = [];
+
+            while (accounts.length < MAX_OAUTH_ACCOUNTS) {
+              console.log(`\n=== Antigravity OAuth (Account ${accounts.length + 1}) ===`);
+
+              const projectId = await promptProjectId();
+
+              const result = await (async (): Promise<AntigravityTokenExchangeResult> => {
+                let listener: OAuthListener | null = null;
+                if (!isHeadless) {
+                  try {
+                    listener = await startOAuthListener();
+                  } catch {
+                    listener = null;
+                  }
+                }
+
+                const authorization = await authorizeAntigravity(projectId);
+                const fallbackState = getStateFromAuthorizationUrl(authorization.url);
+
+                console.log("\nOAuth URL:\n" + authorization.url + "\n");
+
+                if (!isHeadless) {
+                  await openBrowser(authorization.url);
+                }
+
+                if (listener) {
+                  try {
+                    const callbackUrl = await listener.waitForCallback();
+                    const params = extractOAuthCallbackParams(callbackUrl);
+                    if (!params) {
+                      return { type: "failed", error: "Missing code or state in callback URL" };
+                    }
+
+                    return exchangeAntigravity(params.code, params.state);
+                  } catch (error) {
+                    return {
+                      type: "failed",
+                      error: error instanceof Error ? error.message : "Unknown error",
+                    };
+                  } finally {
+                    try {
+                      await listener.close();
+                    } catch {
+                      // ignore
+                    }
+                  }
+                }
+
+                console.log("1. Open the URL below in your browser and complete Google sign-in.");
+                console.log(
+                  "2. After approving, copy the full redirected localhost URL from the address bar.",
+                );
+                console.log("3. Paste it back here.");
+
+                const callbackInput = await promptOAuthCallbackValue(
+                  "Paste the redirect URL (or just the code) here: ",
+                );
+                const params = parseOAuthCallbackInput(callbackInput, fallbackState);
+                if ("error" in params) {
+                  return { type: "failed", error: params.error };
+                }
+
+                return exchangeAntigravity(params.code, params.state);
+              })();
+
+              if (result.type === "failed") {
+                if (accounts.length === 0) {
+                  return {
+                    url: "",
+                    instructions: `Authentication failed: ${result.error}`,
+                    method: "auto",
+                    callback: async () => result,
+                  };
+                }
+
+                console.warn(
+                  `[opencode-antigravity-auth] Skipping failed account ${accounts.length + 1}: ${result.error}`,
+                );
+                break;
+              }
+
+              accounts.push(result);
+
+              try {
+                await persistAccountPool([result]);
+              } catch {
+                // ignore
+              }
+
+              if (accounts.length >= MAX_OAUTH_ACCOUNTS) {
+                break;
+              }
+
+              const addAnother = await promptAddAnotherAccount(accounts.length);
+              if (!addAnother) {
+                break;
+              }
+            }
+
+            const primary = accounts[0];
+            if (!primary) {
+              return {
+                url: "",
+                instructions: "Authentication cancelled",
+                method: "auto",
+                callback: async () => ({ type: "failed", error: "Authentication cancelled" }),
+              };
+            }
+
+            return {
+              url: "",
+              instructions: `Multi-account setup complete (${accounts.length} account(s)).`,
+              method: "auto",
+              callback: async (): Promise<AntigravityTokenExchangeResult> => primary,
+            };
+          }
+
+          // TUI flow (`/connect`) does not support per-account prompts yet.
+          const projectId = "";
+
           let listener: OAuthListener | null = null;
           if (!isHeadless) {
             try {
               listener = await startOAuthListener();
-            } catch (error) {
-              console.log("\nWarning: Couldn't start the local callback listener. Falling back to manual copy/paste.");
+            } catch {
+              listener = null;
             }
           }
 
-          const authorization = await authorizeAntigravity("");
+          const authorization = await authorizeAntigravity(projectId);
+          const fallbackState = getStateFromAuthorizationUrl(authorization.url);
 
-          // Try to open the browser automatically
           if (!isHeadless) {
-            try {
-              if (process.platform === "darwin") {
-                exec(`open "${authorization.url}"`);
-              } else if (process.platform === "win32") {
-                exec(`start "${authorization.url}"`);
-              } else {
-                exec(`xdg-open "${authorization.url}"`);
-              }
-            } catch (e) {
-              console.log("Could not open browser automatically. Please Copy/Paste the URL below.");
-            }
+            await openBrowser(authorization.url);
           }
 
           if (listener) {
-             const { host } = new URL(ANTIGRAVITY_REDIRECT_URI);
-             
             return {
               url: authorization.url,
               instructions:
-                "Complete the sign-in flow in your browser. We'll automatically detect the redirect back to localhost.",
+                "Complete sign-in in your browser. We'll automatically detect the redirect back to localhost.",
               method: "auto",
               callback: async (): Promise<AntigravityTokenExchangeResult> => {
                 try {
-                  // We know listener is not null here because we checked 'if (listener)'
-                  // But TS might need a check or non-null assertion if not inferable.
-                  // Since we are in the if (listener) block, it is safe.
-                  const callbackUrl = await listener!.waitForCallback();
-                  const code = callbackUrl.searchParams.get("code");
-                  const state = callbackUrl.searchParams.get("state");
-
-                  if (!code || !state) {
-                    return {
-                      type: "failed",
-                      error: "Missing code or state in callback URL",
-                    };
+                  const callbackUrl = await listener.waitForCallback();
+                  const params = extractOAuthCallbackParams(callbackUrl);
+                  if (!params) {
+                    return { type: "failed", error: "Missing code or state in callback URL" };
                   }
 
-                  return await exchangeAntigravity(code, state);
+                  const result = await exchangeAntigravity(params.code, params.state);
+                  if (result.type === "success") {
+                    try {
+                      await persistAccountPool([result]);
+                    } catch {
+                      // ignore
+                    }
+                  }
+
+                  return result;
                 } catch (error) {
                   return {
                     type: "failed",
@@ -288,8 +663,9 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   };
                 } finally {
                   try {
-                    await listener?.close();
+                    await listener.close();
                   } catch {
+                    // ignore
                   }
                 }
               },
@@ -299,28 +675,24 @@ export const createAntigravityPlugin = (providerId: string) => async (
           return {
             url: authorization.url,
             instructions:
-              "Paste the full redirected URL (e.g., http://localhost:8085/oauth2callback?code=...): ",
+              "Visit the URL above, complete OAuth, then paste either the full redirect URL or the authorization code.",
             method: "code",
-            callback: async (callbackUrl: string): Promise<AntigravityTokenExchangeResult> => {
-              try {
-                const url = new URL(callbackUrl);
-                const code = url.searchParams.get("code");
-                const state = url.searchParams.get("state");
-
-                if (!code || !state) {
-                  return {
-                    type: "failed",
-                    error: "Missing code or state in callback URL",
-                  };
-                }
-
-                return exchangeAntigravity(code, state);
-              } catch (error) {
-                return {
-                  type: "failed",
-                  error: error instanceof Error ? error.message : "Unknown error",
-                };
+            callback: async (codeInput: string): Promise<AntigravityTokenExchangeResult> => {
+              const params = parseOAuthCallbackInput(codeInput, fallbackState);
+              if ("error" in params) {
+                return { type: "failed", error: params.error };
               }
+
+              const result = await exchangeAntigravity(params.code, params.state);
+              if (result.type === "success") {
+                try {
+                  await persistAccountPool([result]);
+                } catch {
+                  // ignore
+                }
+              }
+
+              return result;
             },
           };
         },

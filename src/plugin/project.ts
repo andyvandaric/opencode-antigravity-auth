@@ -5,11 +5,7 @@ import {
   ANTIGRAVITY_DEFAULT_PROJECT_ID,
 } from "../constants";
 import { formatRefreshParts, parseRefreshParts } from "./auth";
-import type {
-  OAuthAuthDetails,
-  PluginClient,
-  ProjectContextResult,
-} from "./types";
+import type { OAuthAuthDetails, ProjectContextResult } from "./types";
 
 const projectContextResultCache = new Map<string, ProjectContextResult>();
 const projectContextPendingCache = new Map<string, Promise<ProjectContextResult>>();
@@ -247,11 +243,7 @@ export async function onboardManagedProject(
 /**
  * Resolves an effective project ID for the current auth state, caching results per refresh token.
  */
-export async function ensureProjectContext(
-  auth: OAuthAuthDetails,
-  client: PluginClient,
-  providerId: string,
-): Promise<ProjectContextResult> {
+export async function ensureProjectContext(auth: OAuthAuthDetails): Promise<ProjectContextResult> {
   const accessToken = auth.access;
   if (!accessToken) {
     return { auth, effectiveProjectId: "" };
@@ -285,11 +277,6 @@ export async function ensureProjectContext(
           managedProjectId,
         }),
       };
-
-      await client.auth.set({
-        path: { id: providerId },
-        body: updatedAuth,
-      });
 
       return { auth: updatedAuth, effectiveProjectId: managedProjectId };
     };

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ANTIGRAVITY_PROVIDER_ID } from "../constants";
-import { refreshAccessToken } from "./token";
+import { AntigravityTokenRefreshError, refreshAccessToken } from "./token";
 import type { OAuthAuthDetails, PluginClient } from "./types";
 
 const baseAuth: OAuthAuthDetails = {
@@ -26,7 +26,7 @@ describe("refreshAccessToken", () => {
     vi.restoreAllMocks();
   });
 
-  it("updates the caller and persists when refresh token is unchanged", async () => {
+  it("updates the caller when refresh token is unchanged", async () => {
     const client = createClient();
     const fetchMock = vi.fn(async () => {
       return new Response(
@@ -42,10 +42,10 @@ describe("refreshAccessToken", () => {
     const result = await refreshAccessToken(baseAuth, client, ANTIGRAVITY_PROVIDER_ID);
 
     expect(result?.access).toBe("new-access");
-    expect(client.auth.set.mock.calls.length).toBe(1);
+    expect(client.auth.set.mock.calls.length).toBe(0);
   });
 
-  it("persists when Google rotates the refresh token", async () => {
+  it("handles Google refresh token rotation", async () => {
     const client = createClient();
     const fetchMock = vi.fn(async () => {
       return new Response(
@@ -62,13 +62,26 @@ describe("refreshAccessToken", () => {
     const result = await refreshAccessToken(baseAuth, client, ANTIGRAVITY_PROVIDER_ID);
 
     expect(result?.access).toBe("next-access");
-    expect(client.auth.set.mock.calls.length).toBe(1);
-    expect(client.auth.set.mock.calls[0]?.[0]).toEqual({
-      path: { id: ANTIGRAVITY_PROVIDER_ID },
-      body: expect.objectContaining({
-        type: "oauth",
-        refresh: expect.stringContaining("rotated-token"),
-      }),
+    expect(result?.refresh).toContain("rotated-token");
+    expect(client.auth.set.mock.calls.length).toBe(0);
+  });
+
+  it("throws a typed error on invalid_grant", async () => {
+    const client = createClient();
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          error: "invalid_grant",
+          error_description: "Refresh token revoked",
+        }),
+        { status: 400, statusText: "Bad Request" },
+      );
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await expect(refreshAccessToken(baseAuth, client, ANTIGRAVITY_PROVIDER_ID)).rejects.toMatchObject({
+      name: "AntigravityTokenRefreshError",
+      code: "invalid_grant",
     });
   });
 });

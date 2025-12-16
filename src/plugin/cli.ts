@@ -13,3 +13,17 @@ export async function promptProjectId(): Promise<string> {
     rl.close();
   }
 }
+
+/**
+ * Prompts user whether they want to add another OAuth account.
+ */
+export async function promptAddAnotherAccount(currentCount: number): Promise<boolean> {
+  const rl = createInterface({ input, output });
+  try {
+    const answer = await rl.question(`Add another account? (${currentCount} added) (y/n): `);
+    const normalized = answer.trim().toLowerCase();
+    return normalized === "y" || normalized === "yes";
+  } finally {
+    rl.close();
+  }
+}
