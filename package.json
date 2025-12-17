@@ -1,6 +1,6 @@
 {
   "name": "@ariane-emory/opencode-antigravity-auth",
-  "version": "1.1.9-fix-account-duplication",
+  "version": "1.1.10-fix-account-duplication",
   "description": "Google Antigravity IDE OAuth auth plugin for Opencode - access Gemini 3 Pro and Claude 4.5 using Google credentials",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
