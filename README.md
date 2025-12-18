@@ -29,7 +29,7 @@ Then create or edit the config file at `~/.config/opencode/opencode.json`:
 
 ```json
 {
-  "plugin": ["opencode-antigravity-auth@1.1.4"]
+  "plugin": ["opencode-antigravity-auth@1.2.0"]
 }
 ```
 
@@ -61,7 +61,7 @@ Open the **same config file** you created in Step 1 (`~/.config/opencode/opencod
 
 ```json
 {
-  "plugin": ["opencode-antigravity-auth@1.1.4"],
+  "plugin": ["opencode-antigravity-auth@1.2.0"],
   "provider": {
     "google": {
       "models": {
