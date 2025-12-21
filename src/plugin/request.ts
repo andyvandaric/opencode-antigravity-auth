@@ -606,7 +606,7 @@ export function prepareAntigravityRequest(
 
   let upstreamModel = rawModel;
   if (upstreamModel === "gemini-2.5-flash-image") {
-    upstreamModel = "gemini-3-flash";
+    upstreamModel = "gemini-2.5-flash";
   }
 
   const effectiveModel = upstreamModel;

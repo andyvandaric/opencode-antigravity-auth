@@ -26,6 +26,7 @@ import { AntigravityTokenRefreshError, refreshAccessToken } from "./plugin/token
 import { startOAuthListener, type OAuthListener } from "./plugin/server";
 import { clearAccounts, loadAccounts, saveAccounts } from "./plugin/storage";
 import { AccountManager, type ModelFamily } from "./plugin/accounts";
+import { createAutoUpdateCheckerHook } from "./hooks/auto-update-checker";
 import type {
   GetAuth,
   LoaderResult,
@@ -387,9 +388,16 @@ function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
  * Creates an Antigravity OAuth plugin for a specific provider ID.
  */
 export const createAntigravityPlugin = (providerId: string) => async (
-  { client }: PluginContext,
-): Promise<PluginResult> => ({
-  auth: {
+  { client, directory }: PluginContext,
+): Promise<PluginResult> => {
+  const updateChecker = createAutoUpdateCheckerHook(client, directory, {
+    showStartupToast: true,
+    autoUpdate: true,
+  });
+
+  return {
+    event: updateChecker.event,
+    auth: {
     provider: providerId,
     loader: async (getAuth: GetAuth, provider: Provider): Promise<LoaderResult | Record<string, unknown>> => {
       const auth = await getAuth();
@@ -1273,7 +1281,8 @@ export const createAntigravityPlugin = (providerId: string) => async (
       },
     ],
   },
-});
+  };
+};
 
 export const AntigravityCLIOAuthPlugin = createAntigravityPlugin(ANTIGRAVITY_PROVIDER_ID);
 export const GoogleOAuthPlugin = AntigravityCLIOAuthPlugin;

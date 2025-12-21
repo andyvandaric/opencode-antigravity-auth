@@ -15,132 +15,225 @@ Enable Opencode to authenticate against **Antigravity** (Google's IDE) via OAuth
 - **Debug logging** for requests and responses
 - **Drop-in setup** Opencode auto-installs the plugin from config
 
-## Quick start
+## Installation
 
-### Step 1: Create your config file
+### For Humans
 
-If this is your first time using Opencode, create the config directory first:
+**Option A: Let an LLM do it for you**
+
+Paste this into any LLM agent (Claude Code, OpenCode, Cursor, etc.):
+
+```
+Install the opencode-antigravity-auth plugin by following: https://raw.githubusercontent.com/NoeFabris/opencode-antigravity-auth/main/README.md
+```
+
+**Option B: Do it yourself**
+
+1. **Add the plugin to your config:**
+
+   ```bash
+   mkdir -p ~/.config/opencode
+   ```
+
+   Create or edit `~/.config/opencode/opencode.json`:
+
+   ```json
+   {
+     "plugin": ["opencode-antigravity-auth@1.2.0"]
+   }
+   ```
+
+2. **Authenticate:**
+
+   ```bash
+   opencode auth login
+   ```
+
+   Select **Google** → **OAuth with Google (Antigravity)** → Press Enter to skip Project ID → Sign in via browser.
+
+3. **Add models to your config:**
+
+   Add the models you want to use to the same config file:
+
+   ```json
+   {
+     "plugin": ["opencode-antigravity-auth@1.2.0"],
+     "provider": {
+       "google": {
+         "models": {
+           "gemini-3-pro-high": {
+             "name": "Gemini 3 Pro High (Antigravity)",
+             "limit": { "context": 1048576, "output": 65535 },
+             "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
+           },
+           "claude-sonnet-4-5": {
+             "name": "Claude Sonnet 4.5 (Antigravity)",
+             "limit": { "context": 200000, "output": 64000 },
+             "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
+           }
+         }
+       }
+     }
+   }
+   ```
+
+   > See [Available models](#available-models) for the full list.
+
+4. **Use it:**
+
+   ```bash
+   opencode run "Hello" --model=google/gemini-3-pro-high
+   ```
+
+---
+
+### For LLMs
+
+<details>
+<summary><b>🤖 Detailed Installation Guide for LLM Agents</b> (click to expand)</summary>
+
+If you're an LLM agent helping a user set up this plugin, follow these steps:
+
+#### Step 1: Verify OpenCode is installed
+
+```bash
+command -v opencode && opencode --version || echo "OpenCode not installed - see https://opencode.ai/docs"
+```
+
+#### Step 2: Create or update the config
 
 ```bash
 mkdir -p ~/.config/opencode
+
+if [ -f ~/.config/opencode/opencode.json ]; then
+    if command -v jq &> /dev/null; then
+        jq '.plugin = ((.plugin // []) + ["opencode-antigravity-auth@1.2.0"] | unique)' \
+            ~/.config/opencode/opencode.json > /tmp/oc.json && \
+            mv /tmp/oc.json ~/.config/opencode/opencode.json
+    else
+        echo "Add \"opencode-antigravity-auth@1.2.0\" to the plugin array manually"
+    fi
+else
+    echo '{"plugin":["opencode-antigravity-auth@1.2.0"]}' > ~/.config/opencode/opencode.json
+fi
 ```
 
-Then create or edit the config file at `~/.config/opencode/opencode.json`:
+#### Step 3: Ask user about multi-account setup
 
-```json
-{
-  "plugin": ["opencode-antigravity-auth@1.2.0"]
-}
-```
+Before running `opencode auth login`, ask the user:
 
-> **Note:** You can also use a project-local `.opencode.json` file in your project root instead. The global config at `~/.config/opencode/opencode.json` applies to all projects.
+> **Do you want to add multiple Google accounts for load balancing?**
+> - Adding 2-10 accounts maximizes rate limits and provides automatic failover
+> - You can always add more accounts later
 
-### Step 2: Authenticate
+Based on their answer:
+- **Yes, multiple accounts** → After first login, prompt: "Sign in complete. Add another account? (up to 10 supported)"
+- **No, just one** → Single account is fine, they can add more later with `opencode auth login`
 
-Run the authentication command:
+#### Step 4: Run authentication
+
+Tell the user to run:
 
 ```bash
 opencode auth login
 ```
 
+Guide them through the prompts:
 1. Select **Google** as the provider
 2. Select **OAuth with Google (Antigravity)**
-3. **Project ID prompt:** You'll see this prompt:
-   ```
-   Project ID (leave blank to use your default project):
-   ```
-   **Just press Enter to skip this** — it's optional and only needed if you want to use a specific Google Cloud project. Most users can leave it blank.
-4. Sign in via the browser and return to Opencode. If the browser doesn't open, copy the displayed URL manually.
-5. After signing in, you can add more Google accounts (up to 10) for load balancing, or press Enter to finish.
+3. **Project ID prompt** → Tell user: "Press Enter to skip (most users don't need this)"
+4. Browser opens for Google sign-in
+5. If multi-account: repeat for additional accounts, or press Enter to finish
 
-> **Alternative:** For a quick single-account setup without project ID options, open `opencode` and use the `/connect` command instead.
+#### Step 5: Add models to config
 
-### Step 3: Add the models you want to use
+Merge model definitions into the user's config file (`~/.config/opencode/opencode.json`):
 
-Open the **same config file** you created in Step 1 (`~/.config/opencode/opencode.json`) and add the models under `provider.google.models`:
+```bash
+# If jq is available, merge models programmatically
+if command -v jq &> /dev/null; then
+    jq '.provider.google.models = {
+      "gemini-3-pro-high": {"name": "Gemini 3 Pro High (Antigravity)", "limit": {"context": 1048576, "output": 65535}, "modalities": {"input": ["text", "image", "pdf"], "output": ["text"]}},
+      "gemini-3-pro-low": {"name": "Gemini 3 Pro Low (Antigravity)", "limit": {"context": 1048576, "output": 65535}, "modalities": {"input": ["text", "image", "pdf"], "output": ["text"]}},
+      "gemini-3-flash": {"name": "Gemini 3 Flash (Antigravity)", "limit": {"context": 1048576, "output": 65536}, "modalities": {"input": ["text", "image", "pdf"], "output": ["text"]}},
+      "claude-sonnet-4-5": {"name": "Claude Sonnet 4.5 (Antigravity)", "limit": {"context": 200000, "output": 64000}, "modalities": {"input": ["text", "image", "pdf"], "output": ["text"]}},
+      "claude-sonnet-4-5-thinking": {"name": "Claude Sonnet 4.5 Thinking (Antigravity)", "limit": {"context": 200000, "output": 64000}, "modalities": {"input": ["text", "image", "pdf"], "output": ["text"]}},
+      "claude-opus-4-5-thinking": {"name": "Claude Opus 4.5 Thinking (Antigravity)", "limit": {"context": 200000, "output": 64000}, "modalities": {"input": ["text", "image", "pdf"], "output": ["text"]}},
+      "gpt-oss-120b-medium": {"name": "GPT-OSS 120B Medium (Antigravity)", "limit": {"context": 131072, "output": 32768}, "modalities": {"input": ["text", "image", "pdf"], "output": ["text"]}}
+    } + (.provider.google.models // {})' ~/.config/opencode/opencode.json > /tmp/oc.json && mv /tmp/oc.json ~/.config/opencode/opencode.json
+fi
+```
+
+Or edit the file manually and add the models from the [Available models](#available-models) section.
+
+#### Step 6: Verify setup
+
+```bash
+opencode run "Hello" --model=google/gemini-3-pro-high
+```
+
+If successful, tell the user: **"Setup complete! You can now use Antigravity models in OpenCode."**
+
+</details>
+
+---
+
+## Available models
+
+Add these models to your `~/.config/opencode/opencode.json` under `provider.google.models`:
+
+| Model ID | Description |
+|----------|-------------|
+| `gemini-3-pro-high` | Gemini 3 Pro High |
+| `gemini-3-pro-low` | Gemini 3 Pro Low |
+| `gemini-3-flash` | Gemini 3 Flash |
+| `claude-sonnet-4-5` | Claude Sonnet 4.5 |
+| `claude-sonnet-4-5-thinking` | Claude Sonnet 4.5 with thinking |
+| `claude-opus-4-5-thinking` | Claude Opus 4.5 with thinking |
+| `gpt-oss-120b-medium` | GPT-OSS 120B Medium |
+
+<details>
+<summary><b>Full model configuration</b> (click to expand)</summary>
 
 ```json
 {
-  "plugin": ["opencode-antigravity-auth@1.2.0"],
   "provider": {
     "google": {
       "models": {
         "gemini-3-pro-high": {
           "name": "Gemini 3 Pro High (Antigravity)",
-          "limit": {
-            "context": 1048576,
-            "output": 65535
-          },
-          "modalities": {
-            "input": ["text", "image", "pdf"],
-            "output": ["text"]
-          }
+          "limit": { "context": 1048576, "output": 65535 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
         },
         "gemini-3-pro-low": {
           "name": "Gemini 3 Pro Low (Antigravity)",
-          "limit": {
-            "context": 1048576,
-            "output": 65535
-          },
-          "modalities": {
-            "input": ["text", "image", "pdf"],
-            "output": ["text"]
-          }
+          "limit": { "context": 1048576, "output": 65535 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
         },
         "gemini-3-flash": {
           "name": "Gemini 3 Flash (Antigravity)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "modalities": {
-            "input": ["text", "image", "pdf"],
-            "output": ["text"]
-          }
+          "limit": { "context": 1048576, "output": 65536 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
         },
         "claude-sonnet-4-5": {
           "name": "Claude Sonnet 4.5 (Antigravity)",
-          "limit": {
-            "context": 200000,
-            "output": 64000
-          },
-          "modalities": {
-            "input": ["text", "image", "pdf"],
-            "output": ["text"]
-          }
+          "limit": { "context": 200000, "output": 64000 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
         },
         "claude-sonnet-4-5-thinking": {
           "name": "Claude Sonnet 4.5 Thinking (Antigravity)",
-          "limit": {
-            "context": 200000,
-            "output": 64000
-          },
-          "modalities": {
-            "input": ["text", "image", "pdf"],
-            "output": ["text"]
-          }
+          "limit": { "context": 200000, "output": 64000 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
         },
         "claude-opus-4-5-thinking": {
           "name": "Claude Opus 4.5 Thinking (Antigravity)",
-          "limit": {
-            "context": 200000,
-            "output": 64000
-          },
-          "modalities": {
-            "input": ["text", "image", "pdf"],
-            "output": ["text"]
-          }
+          "limit": { "context": 200000, "output": 64000 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
         },
         "gpt-oss-120b-medium": {
           "name": "GPT-OSS 120B Medium (Antigravity)",
-          "limit": {
-            "context": 131072,
-            "output": 32768
-          },
-          "modalities": {
-            "input": ["text", "image", "pdf"],
-            "output": ["text"]
-          }
+          "limit": { "context": 131072, "output": 32768 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
         }
       }
     }
@@ -148,19 +241,7 @@ Open the **same config file** you created in Step 1 (`~/.config/opencode/opencod
 }
 ```
 
-> **Tip:** You only need to add the models you plan to use. The example above includes all available models, but you can remove any you don't need. The `modalities` field enables image and PDF support in the TUI.
-
-### Step 4: Use a model
-
-```bash
-opencode run "Hello world" --model=google/gemini-3-pro-high
-```
-
-Or start the interactive TUI and select a model from the model picker:
-
-```bash
-opencode
-```
+</details>
 
 ## Multi-account load balancing
 
