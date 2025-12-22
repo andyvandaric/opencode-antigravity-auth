@@ -8,6 +8,7 @@ Enable Opencode to authenticate against **Antigravity** (Google's IDE) via OAuth
 
 - **Google OAuth sign-in** (multi-account via `opencode auth login`) with automatic token refresh
 - **Multi-account load balancing** Automatically cycle through multiple Google accounts to maximize rate limits
+- **Dual Gemini quota pools** Gemini models automatically fallback to a second quota pool when the first is exhausted, effectively doubling your Gemini quota per account
 - **Real-time SSE streaming** including thinking blocks and incremental output
 - **Advanced Claude support** Interleaved thinking, stable multi-turn signatures, and validated tool calling
 - **Automatic endpoint fallback** between Antigravity API endpoints (daily → autopush → prod)
@@ -253,6 +254,7 @@ The plugin supports multiple Google accounts to maximize rate limits and provide
 
 - **Sticky account selection:** The plugin sticks to the same account for all requests until it hits a rate limit. This preserves Anthropic's prompt cache, which is organization-scoped.
 - **Per-model-family rate limits:** Rate limits are tracked separately for Claude and Gemini models. If an account is rate-limited for Claude, it can still be used for Gemini requests.
+- **Dual quota pools for Gemini:** Gemini models have access to two separate quota pools (Antigravity and Gemini CLI). When one pool is exhausted, the plugin automatically switches to the other before trying a different account.
 - **Smart retry threshold:** Short rate limits (≤5s) are retried on the same account to avoid unnecessary switching.
 - **Exponential backoff:** Consecutive rate limits trigger exponential backoff with increasing delays.
 - **Quota-aware messages:** Rate limit toasts show quota reset times when available from the API.
@@ -260,6 +262,19 @@ The plugin supports multiple Google accounts to maximize rate limits and provide
 - **Smart cooldown:** Rate-limited accounts are temporarily cooled down and automatically become available again after the cooldown expires.
 - **Single-account retry:** If you only have one account, the plugin waits for the rate limit to reset and retries automatically.
 - **Debounced notifications:** Toast notifications are debounced to avoid spam during streaming responses.
+
+### Dual quota pools (Gemini only)
+
+For Gemini models, the plugin can access two independent quota pools using the same Google account:
+
+| Quota Pool | Headers Used | When Used |
+|------------|--------------|-----------|
+| Antigravity | Antigravity headers | Primary (tried first) |
+| Gemini CLI | Gemini CLI headers | Fallback when Antigravity is rate-limited |
+
+This effectively **doubles your Gemini quota** per account. The fallback is seamless — conversation context is preserved when switching between quota pools.
+
+> **Note:** Claude models only work with Antigravity headers, so this dual-pool fallback only applies to Gemini models.
 
 ### Quiet mode
 

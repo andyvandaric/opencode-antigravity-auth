@@ -69,6 +69,14 @@ export const ANTIGRAVITY_HEADERS = {
   "Client-Metadata": '{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}',
 } as const;
 
+export const GEMINI_CLI_HEADERS = {
+  "User-Agent": "google-api-nodejs-client/9.15.1",
+  "X-Goog-Api-Client": "gl-node/22.17.0",
+  "Client-Metadata": "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
+} as const;
+
+export type HeaderStyle = "antigravity" | "gemini-cli";
+
 /**
  * Provider identifier shared between the plugin loader and credential store.
  */

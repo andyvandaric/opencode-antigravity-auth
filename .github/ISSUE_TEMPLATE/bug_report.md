@@ -27,7 +27,9 @@ What actually happens.
 - Node.js version:
 
 **Logs**
-If applicable, attach logs (enable verbose logging with `export OPENCODE_ANTIGRAVITY_DEBUG=1`). Logs are saved in the current directory as `antigravity-debug-<timestamp>.log`.
+If applicable, attach logs. Enable debug logging with `export OPENCODE_ANTIGRAVITY_DEBUG=1` (or verbose with `export OPENCODE_ANTIGRAVITY_DEBUG=2` / `verbose`).
+
+Logs are written to `~/.config/opencode/antigravity-logs/antigravity-debug-<timestamp>.log` (or `$XDG_CONFIG_HOME/opencode/antigravity-logs/...`). Override the directory with `OPENCODE_ANTIGRAVITY_LOG_DIR`.
 
 **Compliance Checklist**
 Please confirm:

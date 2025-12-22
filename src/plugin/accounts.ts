@@ -1,8 +1,10 @@
 import { formatRefreshParts, parseRefreshParts } from "./auth";
-import { loadAccounts, saveAccounts, type AccountStorage, type RateLimitState, type ModelFamily } from "./storage";
+import { loadAccounts, saveAccounts, type AccountStorageV3, type RateLimitStateV3, type ModelFamily, type HeaderStyle } from "./storage";
 import type { OAuthAuthDetails, RefreshParts } from "./types";
 
-export type { ModelFamily } from "./storage";
+export type { ModelFamily, HeaderStyle } from "./storage";
+
+export type QuotaKey = "claude" | "gemini-antigravity" | "gemini-cli";
 
 export interface ManagedAccount {
   index: number;
@@ -12,7 +14,7 @@ export interface ManagedAccount {
   parts: RefreshParts;
   access?: string;
   expires?: number;
-  rateLimitResetTimes: RateLimitState;
+  rateLimitResetTimes: RateLimitStateV3;
   lastSwitchReason?: "rate-limit" | "initial" | "rotation";
 }
 
@@ -27,18 +29,33 @@ function clampNonNegativeInt(value: unknown, fallback: number): number {
   return value < 0 ? 0 : Math.floor(value);
 }
 
-function isRateLimitedForFamily(account: ManagedAccount, family: ModelFamily): boolean {
-  const resetTime = account.rateLimitResetTimes[family];
+function getQuotaKey(family: ModelFamily, headerStyle: HeaderStyle): QuotaKey {
+  if (family === "claude") {
+    return "claude";
+  }
+  return headerStyle === "gemini-cli" ? "gemini-cli" : "gemini-antigravity";
+}
+
+function isRateLimitedForQuotaKey(account: ManagedAccount, key: QuotaKey): boolean {
+  const resetTime = account.rateLimitResetTimes[key];
   return resetTime !== undefined && nowMs() < resetTime;
+}
+
+function isRateLimitedForFamily(account: ManagedAccount, family: ModelFamily): boolean {
+  if (family === "claude") {
+    return isRateLimitedForQuotaKey(account, "claude");
+  }
+  return isRateLimitedForQuotaKey(account, "gemini-antigravity") && 
+         isRateLimitedForQuotaKey(account, "gemini-cli");
 }
 
 function clearExpiredRateLimits(account: ManagedAccount): void {
   const now = nowMs();
-  if (account.rateLimitResetTimes.claude !== undefined && now >= account.rateLimitResetTimes.claude) {
-    delete account.rateLimitResetTimes.claude;
-  }
-  if (account.rateLimitResetTimes.gemini !== undefined && now >= account.rateLimitResetTimes.gemini) {
-    delete account.rateLimitResetTimes.gemini;
+  const keys: QuotaKey[] = ["claude", "gemini-antigravity", "gemini-cli"];
+  for (const key of keys) {
+    if (account.rateLimitResetTimes[key] !== undefined && now >= account.rateLimitResetTimes[key]!) {
+      delete account.rateLimitResetTimes[key];
+    }
   }
 }
 
@@ -54,7 +71,10 @@ function clearExpiredRateLimits(account: ManagedAccount): void {
 export class AccountManager {
   private accounts: ManagedAccount[] = [];
   private cursor = 0;
-  private currentAccountIndex = -1;
+  private currentAccountIndexByFamily: Record<ModelFamily, number> = {
+    claude: -1,
+    gemini: -1,
+  };
   private lastToastAccountIndex = -1;
   private lastToastTime = 0;
 
@@ -63,7 +83,7 @@ export class AccountManager {
     return new AccountManager(authFallback, stored);
   }
 
-  constructor(authFallback?: OAuthAuthDetails, stored?: AccountStorage | null) {
+  constructor(authFallback?: OAuthAuthDetails, stored?: AccountStorageV3 | null) {
     const authParts = authFallback ? parseRefreshParts(authFallback.refresh) : null;
 
     if (stored && stored.accounts.length === 0) {
@@ -107,7 +127,15 @@ export class AccountManager {
       this.cursor = clampNonNegativeInt(stored.activeIndex, 0);
       if (this.accounts.length > 0) {
         this.cursor = this.cursor % this.accounts.length;
-        this.currentAccountIndex = this.cursor;
+        const defaultIndex = this.cursor;
+        this.currentAccountIndexByFamily.claude = clampNonNegativeInt(
+          stored.activeIndexByFamily?.claude,
+          defaultIndex
+        ) % this.accounts.length;
+        this.currentAccountIndexByFamily.gemini = clampNonNegativeInt(
+          stored.activeIndexByFamily?.gemini,
+          defaultIndex
+        ) % this.accounts.length;
       }
 
       return;
@@ -130,7 +158,8 @@ export class AccountManager {
           },
         ];
         this.cursor = 0;
-        this.currentAccountIndex = 0;
+        this.currentAccountIndexByFamily.claude = 0;
+        this.currentAccountIndexByFamily.gemini = 0;
       }
     }
   }
@@ -143,16 +172,17 @@ export class AccountManager {
     return this.accounts.map((a) => ({ ...a, parts: { ...a.parts }, rateLimitResetTimes: { ...a.rateLimitResetTimes } }));
   }
 
-  getCurrentAccount(): ManagedAccount | null {
-    if (this.currentAccountIndex >= 0 && this.currentAccountIndex < this.accounts.length) {
-      return this.accounts[this.currentAccountIndex] ?? null;
+  getCurrentAccountForFamily(family: ModelFamily): ManagedAccount | null {
+    const currentIndex = this.currentAccountIndexByFamily[family];
+    if (currentIndex >= 0 && currentIndex < this.accounts.length) {
+      return this.accounts[currentIndex] ?? null;
     }
     return null;
   }
 
-  markSwitched(account: ManagedAccount, reason: "rate-limit" | "initial" | "rotation"): void {
+  markSwitched(account: ManagedAccount, reason: "rate-limit" | "initial" | "rotation", family: ModelFamily): void {
     account.lastSwitchReason = reason;
-    this.currentAccountIndex = account.index;
+    this.currentAccountIndexByFamily[family] = account.index;
   }
 
   shouldShowAccountToast(accountIndex: number, debounceMs = 30000): boolean {
@@ -169,7 +199,7 @@ export class AccountManager {
   }
 
   getCurrentOrNextForFamily(family: ModelFamily): ManagedAccount | null {
-    const current = this.getCurrentAccount();
+    const current = this.getCurrentAccountForFamily(family);
     if (current) {
       clearExpiredRateLimits(current);
       if (!isRateLimitedForFamily(current, family)) {
@@ -180,7 +210,7 @@ export class AccountManager {
 
     const next = this.getNextForFamily(family);
     if (next) {
-      this.currentAccountIndex = next.index;
+      this.currentAccountIndexByFamily[family] = next.index;
     }
     return next;
   }
@@ -205,8 +235,29 @@ export class AccountManager {
     return account;
   }
 
-  markRateLimited(account: ManagedAccount, retryAfterMs: number, family: ModelFamily): void {
-    account.rateLimitResetTimes[family] = nowMs() + retryAfterMs;
+  markRateLimited(account: ManagedAccount, retryAfterMs: number, family: ModelFamily, headerStyle: HeaderStyle = "antigravity"): void {
+    const key = getQuotaKey(family, headerStyle);
+    account.rateLimitResetTimes[key] = nowMs() + retryAfterMs;
+  }
+
+  isRateLimitedForHeaderStyle(account: ManagedAccount, family: ModelFamily, headerStyle: HeaderStyle): boolean {
+    clearExpiredRateLimits(account);
+    const key = getQuotaKey(family, headerStyle);
+    return isRateLimitedForQuotaKey(account, key);
+  }
+
+  getAvailableHeaderStyle(account: ManagedAccount, family: ModelFamily): HeaderStyle | null {
+    clearExpiredRateLimits(account);
+    if (family === "claude") {
+      return isRateLimitedForQuotaKey(account, "claude") ? null : "antigravity";
+    }
+    if (!isRateLimitedForQuotaKey(account, "gemini-antigravity")) {
+      return "antigravity";
+    }
+    if (!isRateLimitedForQuotaKey(account, "gemini-cli")) {
+      return "gemini-cli";
+    }
+    return null;
   }
 
   removeAccount(account: ManagedAccount): boolean {
@@ -222,7 +273,8 @@ export class AccountManager {
 
     if (this.accounts.length === 0) {
       this.cursor = 0;
-      this.currentAccountIndex = -1;
+      this.currentAccountIndexByFamily.claude = -1;
+      this.currentAccountIndexByFamily.gemini = -1;
       return true;
     }
 
@@ -231,11 +283,13 @@ export class AccountManager {
     }
     this.cursor = this.cursor % this.accounts.length;
 
-    if (this.currentAccountIndex > idx) {
-      this.currentAccountIndex -= 1;
-    }
-    if (this.currentAccountIndex >= this.accounts.length) {
-      this.currentAccountIndex = -1;
+    for (const family of ["claude", "gemini"] as ModelFamily[]) {
+      if (this.currentAccountIndexByFamily[family] > idx) {
+        this.currentAccountIndexByFamily[family] -= 1;
+      }
+      if (this.currentAccountIndexByFamily[family] >= this.accounts.length) {
+        this.currentAccountIndexByFamily[family] = -1;
+      }
     }
 
     return true;
@@ -266,10 +320,22 @@ export class AccountManager {
       return 0;
     }
 
-    const waitTimes = this.accounts
-      .map((a) => a.rateLimitResetTimes[family])
-      .filter((t): t is number => t !== undefined)
-      .map((t) => Math.max(0, t - nowMs()));
+    const waitTimes: number[] = [];
+    for (const a of this.accounts) {
+      if (family === "claude") {
+        const t = a.rateLimitResetTimes.claude;
+        if (t !== undefined) waitTimes.push(Math.max(0, t - nowMs()));
+      } else {
+        // For Gemini, account becomes available when EITHER pool expires
+        const t1 = a.rateLimitResetTimes["gemini-antigravity"];
+        const t2 = a.rateLimitResetTimes["gemini-cli"];
+        const accountWait = Math.min(
+          t1 !== undefined ? Math.max(0, t1 - nowMs()) : Infinity,
+          t2 !== undefined ? Math.max(0, t2 - nowMs()) : Infinity
+        );
+        if (accountWait !== Infinity) waitTimes.push(accountWait);
+      }
+    }
 
     return waitTimes.length > 0 ? Math.min(...waitTimes) : 0;
   }
@@ -279,8 +345,11 @@ export class AccountManager {
   }
 
   async saveToDisk(): Promise<void> {
-    const storage: AccountStorage = {
-      version: 2,
+    const claudeIndex = Math.max(0, this.currentAccountIndexByFamily.claude);
+    const geminiIndex = Math.max(0, this.currentAccountIndexByFamily.gemini);
+    
+    const storage: AccountStorageV3 = {
+      version: 3,
       accounts: this.accounts.map((a) => ({
         email: a.email,
         refreshToken: a.parts.refreshToken,
@@ -291,7 +360,11 @@ export class AccountManager {
         lastSwitchReason: a.lastSwitchReason,
         rateLimitResetTimes: Object.keys(a.rateLimitResetTimes).length > 0 ? a.rateLimitResetTimes : undefined,
       })),
-      activeIndex: Math.max(0, this.currentAccountIndex),
+      activeIndex: claudeIndex,
+      activeIndexByFamily: {
+        claude: claudeIndex,
+        gemini: geminiIndex,
+      },
     };
 
     await saveAccounts(storage);

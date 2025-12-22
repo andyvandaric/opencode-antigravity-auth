@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
 import {
   ANTIGRAVITY_HEADERS,
+  GEMINI_CLI_HEADERS,
   ANTIGRAVITY_ENDPOINT,
+  type HeaderStyle,
 } from "../constants";
 import { cacheSignature, getCachedSignature } from "./cache";
 import {
@@ -559,6 +561,7 @@ export function prepareAntigravityRequest(
   accessToken: string,
   projectId: string,
   endpointOverride?: string,
+  headerStyle: HeaderStyle = "antigravity",
 ): {
   request: RequestInfo;
   init: RequestInit;
@@ -572,6 +575,7 @@ export function prepareAntigravityRequest(
   toolDebugSummary?: string;
   toolDebugPayload?: string;
   needsSignedThinkingWarmup?: boolean;
+  headerStyle: HeaderStyle;
 } {
   const baseInit: RequestInit = { ...init };
   const headers = new Headers(init?.headers ?? {});
@@ -587,6 +591,7 @@ export function prepareAntigravityRequest(
       request: input,
       init: { ...baseInit, headers },
       streaming: false,
+      headerStyle,
     };
   }
 
@@ -599,6 +604,7 @@ export function prepareAntigravityRequest(
       request: input,
       init: { ...baseInit, headers },
       streaming: false,
+      headerStyle,
     };
   }
 
@@ -1231,9 +1237,10 @@ export function prepareAntigravityRequest(
     }
   }
 
-  headers.set("User-Agent", ANTIGRAVITY_HEADERS["User-Agent"]);
-  headers.set("X-Goog-Api-Client", ANTIGRAVITY_HEADERS["X-Goog-Api-Client"]);
-  headers.set("Client-Metadata", ANTIGRAVITY_HEADERS["Client-Metadata"]);
+  const selectedHeaders = headerStyle === "gemini-cli" ? GEMINI_CLI_HEADERS : ANTIGRAVITY_HEADERS;
+  headers.set("User-Agent", selectedHeaders["User-Agent"]);
+  headers.set("X-Goog-Api-Client", selectedHeaders["X-Goog-Api-Client"]);
+  headers.set("Client-Metadata", selectedHeaders["Client-Metadata"]);
   // Optional debug header to observe tool normalization on the backend if surfaced
   if (toolDebugMissing > 0) {
     headers.set("X-Opencode-Tools-Debug", String(toolDebugMissing));
@@ -1256,6 +1263,7 @@ export function prepareAntigravityRequest(
     toolDebugSummary: toolDebugSummaries.slice(0, 20).join(" | "),
     toolDebugPayload,
     needsSignedThinkingWarmup,
+    headerStyle,
   };
 }
 

@@ -1,5 +1,5 @@
 import { exec } from "node:child_process";
-import { ANTIGRAVITY_ENDPOINT_FALLBACKS, ANTIGRAVITY_PROVIDER_ID } from "./constants";
+import { ANTIGRAVITY_ENDPOINT_FALLBACKS, ANTIGRAVITY_PROVIDER_ID, ANTIGRAVITY_HEADERS, GEMINI_CLI_HEADERS, type HeaderStyle } from "./constants";
 import { authorizeAntigravity, exchangeAntigravity } from "./antigravity/oauth";
 import type { AntigravityTokenExchangeResult } from "./antigravity/oauth";
 import { accessTokenExpired, isOAuthAuth, parseRefreshParts } from "./plugin/auth";
@@ -207,7 +207,7 @@ async function persistAccountPool(
     : (typeof stored?.activeIndex === "number" && Number.isFinite(stored.activeIndex) ? stored.activeIndex : 0);
 
   await saveAccounts({
-    version: 2,
+    version: 3,
     accounts,
     activeIndex: clampInt(activeIndex, 0, accounts.length - 1),
   });
@@ -370,6 +370,33 @@ function getRateLimitBackoff(accountIndex: number, serverRetryAfterMs: number | 
 
 function resetRateLimitState(accountIndex: number): void {
   rateLimitStateByAccount.delete(accountIndex);
+}
+
+// Track consecutive non-429 failures per account to prevent infinite loops
+const accountFailureState = new Map<number, { consecutiveFailures: number; lastFailureAt: number }>();
+const MAX_CONSECUTIVE_FAILURES = 5;
+const FAILURE_COOLDOWN_MS = 30_000; // 30 seconds cooldown after max failures
+const FAILURE_STATE_RESET_MS = 120_000; // Reset failure count after 2 minutes of no failures
+
+function trackAccountFailure(accountIndex: number): { failures: number; shouldCooldown: boolean; cooldownMs: number } {
+  const now = Date.now();
+  const previous = accountFailureState.get(accountIndex);
+  
+  // Reset if last failure was more than 2 minutes ago
+  const failures = previous && (now - previous.lastFailureAt < FAILURE_STATE_RESET_MS) 
+    ? previous.consecutiveFailures + 1 
+    : 1;
+  
+  accountFailureState.set(accountIndex, { consecutiveFailures: failures, lastFailureAt: now });
+  
+  const shouldCooldown = failures >= MAX_CONSECUTIVE_FAILURES;
+  const cooldownMs = shouldCooldown ? FAILURE_COOLDOWN_MS : 0;
+  
+  return { failures, shouldCooldown, cooldownMs };
+}
+
+function resetAccountFailureState(accountIndex: number): void {
+  accountFailureState.delete(accountIndex);
 }
 
 /**
@@ -622,9 +649,15 @@ export const createAntigravityPlugin = (providerId: string) => async (
               try {
                 const refreshed = await refreshAccessToken(authRecord, client, providerId);
                 if (!refreshed) {
+                  const { failures, shouldCooldown, cooldownMs } = trackAccountFailure(account.index);
                   lastError = new Error("Antigravity token refresh failed");
+                  if (shouldCooldown) {
+                    accountManager.markRateLimited(account, cooldownMs, family, "antigravity");
+                    pushDebug(`token-refresh-failed: cooldown ${cooldownMs}ms after ${failures} failures`);
+                  }
                   continue;
                 }
+                resetAccountFailureState(account.index);
                 accountManager.updateFromAuth(account, refreshed);
                 authRecord = refreshed;
                 try {
@@ -668,7 +701,12 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   continue;
                 }
 
+                const { failures, shouldCooldown, cooldownMs } = trackAccountFailure(account.index);
                 lastError = error instanceof Error ? error : new Error(String(error));
+                if (shouldCooldown) {
+                  accountManager.markRateLimited(account, cooldownMs, family, "antigravity");
+                  pushDebug(`token-refresh-error: cooldown ${cooldownMs}ms after ${failures} failures`);
+                }
                 continue;
               }
             }
@@ -682,8 +720,14 @@ export const createAntigravityPlugin = (providerId: string) => async (
             let projectContext: ProjectContextResult;
             try {
               projectContext = await ensureProjectContext(authRecord);
+              resetAccountFailureState(account.index);
             } catch (error) {
+              const { failures, shouldCooldown, cooldownMs } = trackAccountFailure(account.index);
               lastError = error instanceof Error ? error : new Error(String(error));
+              if (shouldCooldown) {
+                accountManager.markRateLimited(account, cooldownMs, family, "antigravity");
+                pushDebug(`project-context-error: cooldown ${cooldownMs}ms after ${failures} failures`);
+              }
               continue;
             }
 
@@ -761,8 +805,35 @@ export const createAntigravityPlugin = (providerId: string) => async (
               }
             };
 
-            // Try endpoint fallbacks
+            // Try endpoint fallbacks with header style fallback for Gemini
             let shouldSwitchAccount = false;
+            
+            // For Gemini models, we can try both header styles (antigravity first, then gemini-cli)
+            // For Claude models, only antigravity headers work
+            const headerStyles: HeaderStyle[] = family === "gemini" 
+              ? ["antigravity", "gemini-cli"] 
+              : ["antigravity"];
+            
+            let currentHeaderStyleIndex = 0;
+            
+            // Find first non-rate-limited header style for this account
+            while (currentHeaderStyleIndex < headerStyles.length) {
+              const hs = headerStyles[currentHeaderStyleIndex];
+              if (hs && !accountManager.isRateLimitedForHeaderStyle(account, family, hs)) {
+                break;
+              }
+              currentHeaderStyleIndex++;
+            }
+            
+            // If all header styles are rate-limited for this account, switch account
+            if (currentHeaderStyleIndex >= headerStyles.length) {
+              shouldSwitchAccount = true;
+            }
+            
+            headerStyleLoop:
+            while (!shouldSwitchAccount && currentHeaderStyleIndex < headerStyles.length) {
+              const currentHeaderStyle = headerStyles[currentHeaderStyleIndex]!;
+              pushDebug(`headerStyle=${currentHeaderStyle}`);
             
             for (let i = 0; i < ANTIGRAVITY_ENDPOINT_FALLBACKS.length; i++) {
               const currentEndpoint = ANTIGRAVITY_ENDPOINT_FALLBACKS[i];
@@ -774,6 +845,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   accessToken,
                   projectContext.effectiveProjectId,
                   currentEndpoint,
+                  currentHeaderStyle,
                 );
 
                 const originalUrl = toUrlString(input);
@@ -835,7 +907,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   await logResponseBody(debugContext, response, 429);
 
                   if (isCapacityExhausted) {
-                    accountManager.markRateLimited(account, delayMs, family);
+                    accountManager.markRateLimited(account, delayMs, family, currentHeaderStyle);
                     await showToast(
                       `Model capacity exhausted for ${family}. Retrying in ${waitTimeFormatted} (attempt ${attempt})...`,
                       "warning",
@@ -854,13 +926,24 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   }
 
 
-                  // Mark account as rate-limited for this family
-                  accountManager.markRateLimited(account, delayMs, family);
+                  // Mark this header style as rate-limited for this account
+                  accountManager.markRateLimited(account, delayMs, family, currentHeaderStyle);
 
                   try {
                     await accountManager.saveToDisk();
                   } catch (error) {
                     console.error("[opencode-antigravity-auth] Failed to persist rate-limit state:", error);
+                  }
+
+                  // For Gemini, try next header style before switching accounts
+                  if (family === "gemini" && currentHeaderStyleIndex < headerStyles.length - 1) {
+                    const nextHeaderStyle = headerStyles[currentHeaderStyleIndex + 1];
+                    await showToast(
+                      `Rate limited on ${currentHeaderStyle} quota. Trying ${nextHeaderStyle} quota...`,
+                      "warning",
+                    );
+                    currentHeaderStyleIndex++;
+                    continue headerStyleLoop;
                   }
 
                   if (accountCount > 1) {
@@ -912,6 +995,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
 
                 // Success - reset rate limit backoff state
                 resetRateLimitState(account.index);
+                resetAccountFailureState(account.index);
 
                 const shouldRetryEndpoint = (
                   response.status === 403 ||
@@ -967,12 +1051,18 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   continue;
                 }
 
-                // All endpoints failed for this account - try next account
+                // All endpoints failed for this account - track failure and try next account
+                const { failures, shouldCooldown, cooldownMs } = trackAccountFailure(account.index);
                 lastError = error instanceof Error ? error : new Error(String(error));
+                if (shouldCooldown) {
+                  accountManager.markRateLimited(account, cooldownMs, family, currentHeaderStyle);
+                  pushDebug(`endpoint-error: cooldown ${cooldownMs}ms after ${failures} failures`);
+                }
                 shouldSwitchAccount = true;
                 break;
               }
             }
+            } // end headerStyleLoop
             
             if (shouldSwitchAccount) {
               continue;
