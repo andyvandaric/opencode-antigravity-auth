@@ -21,6 +21,35 @@ import type { RequestPayload, ThinkingConfig, ThinkingTier, GoogleSearchConfig }
  * @param schema - A JSON Schema object or primitive value
  * @returns Gemini-compatible schema
  */
+/**
+ * Fields that Gemini API rejects and must be removed from schemas.
+ * Antigravity uses strict protobuf-backed JSON validation.
+ */
+const UNSUPPORTED_SCHEMA_FIELDS = new Set([
+  "additionalProperties",
+  "$schema",
+  "$id", 
+  "$comment",
+  "$ref",
+  "$defs",
+  "definitions",
+  "const",
+  "contentMediaType",
+  "contentEncoding",
+  "if",
+  "then",
+  "else",
+  "not",
+  "patternProperties",
+  "unevaluatedProperties",
+  "unevaluatedItems",
+  "dependentRequired",
+  "dependentSchemas",
+  "propertyNames",
+  "minContains",
+  "maxContains",
+]);
+
 export function toGeminiSchema(schema: unknown): unknown {
   // Return primitives and arrays as-is
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
@@ -40,7 +69,7 @@ export function toGeminiSchema(schema: unknown): unknown {
 
   for (const [key, value] of Object.entries(inputSchema)) {
     // Skip unsupported fields that Gemini API rejects
-    if (key === "additionalProperties" || key === "$schema" || key === "$id" || key === "$comment") {
+    if (UNSUPPORTED_SCHEMA_FIELDS.has(key)) {
       continue;
     }
 
@@ -84,6 +113,12 @@ export function toGeminiSchema(schema: unknown): unknown {
     } else {
       result[key] = value;
     }
+  }
+
+  // Issue #80: Ensure array schemas have an 'items' field
+  // Gemini API requires: "parameters.properties[X].items: missing field"
+  if (result.type === "ARRAY" && !result.items) {
+    result.items = { type: "STRING" };
   }
 
   return result;
@@ -326,6 +361,10 @@ export interface GeminiTransformOptions {
 export interface GeminiTransformResult {
   toolDebugMissing: number;
   toolDebugSummaries: string[];
+  /** Number of function declarations after wrapping */
+  wrappedFunctionCount: number;
+  /** Number of passthrough tools (googleSearchRetrieval, codeExecution) */
+  passthroughToolCount: number;
 }
 
 /**
@@ -381,5 +420,117 @@ export function applyGeminiTransforms(
   }
 
   // 3. Normalize tools
-  return normalizeGeminiTools(payload);
+  const result = normalizeGeminiTools(payload);
+  
+  // 4. Wrap tools in functionDeclarations format (fixes #203, #206)
+  // Antigravity strict protobuf validation rejects wrapper-level 'parameters' field
+  // Must be: [{ functionDeclarations: [{ name, description, parameters }] }]
+  const wrapResult = wrapToolsAsFunctionDeclarations(payload);
+  
+  return {
+    ...result,
+    wrappedFunctionCount: wrapResult.wrappedFunctionCount,
+    passthroughToolCount: wrapResult.passthroughToolCount,
+  };
+}
+
+export interface WrapToolsResult {
+  wrappedFunctionCount: number;
+  passthroughToolCount: number;
+}
+
+/**
+ * Wrap tools array in Gemini's required functionDeclarations format.
+ * 
+ * Gemini/Antigravity API expects:
+ *   { tools: [{ functionDeclarations: [{ name, description, parameters }] }] }
+ * 
+ * NOT:
+ *   { tools: [{ function: {...}, parameters: {...} }] }
+ * 
+ * The wrapper-level 'parameters' field causes:
+ *   "Unknown name 'parameters' at 'request.tools[0]'"
+ */
+export function wrapToolsAsFunctionDeclarations(payload: RequestPayload): WrapToolsResult {
+  if (!Array.isArray(payload.tools) || payload.tools.length === 0) {
+    return { wrappedFunctionCount: 0, passthroughToolCount: 0 };
+  }
+  
+  const functionDeclarations: Array<{
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  }> = [];
+  
+  const passthroughTools: unknown[] = [];
+  
+  for (const tool of payload.tools as Array<Record<string, unknown>>) {
+    if (tool.googleSearchRetrieval || tool.codeExecution) {
+      passthroughTools.push(tool);
+      continue;
+    }
+    
+    if (tool.functionDeclarations) {
+      if (Array.isArray(tool.functionDeclarations)) {
+        for (const decl of tool.functionDeclarations as Array<Record<string, unknown>>) {
+          functionDeclarations.push({
+            name: String(decl.name || `tool-${functionDeclarations.length}`),
+            description: String(decl.description || ""),
+            parameters: (decl.parameters as Record<string, unknown>) || { type: "OBJECT", properties: {} },
+          });
+        }
+      }
+      continue;
+    }
+    
+    const fn = tool.function as Record<string, unknown> | undefined;
+    const custom = tool.custom as Record<string, unknown> | undefined;
+    
+    const name = String(
+      tool.name ||
+      fn?.name ||
+      custom?.name ||
+      `tool-${functionDeclarations.length}`
+    );
+    
+    const description = String(
+      tool.description ||
+      fn?.description ||
+      custom?.description ||
+      ""
+    );
+    
+    const schema = (
+      fn?.input_schema ||
+      fn?.parameters ||
+      fn?.inputSchema ||
+      custom?.input_schema ||
+      custom?.parameters ||
+      tool.parameters ||
+      tool.input_schema ||
+      tool.inputSchema ||
+      { type: "OBJECT", properties: {} }
+    ) as Record<string, unknown>;
+    
+    functionDeclarations.push({
+      name,
+      description,
+      parameters: schema,
+    });
+  }
+  
+  const finalTools: unknown[] = [];
+  
+  if (functionDeclarations.length > 0) {
+    finalTools.push({ functionDeclarations });
+  }
+  
+  finalTools.push(...passthroughTools);
+  
+  payload.tools = finalTools;
+  
+  return {
+    wrappedFunctionCount: functionDeclarations.length,
+    passthroughToolCount: passthroughTools.length,
+  };
 }
