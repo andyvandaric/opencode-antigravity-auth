@@ -1438,12 +1438,24 @@ export function transformThinkingParts(response: unknown): unknown {
       if (block && typeof block === "object" && (block as any).type === "thinking") {
         const thinkingText = (block as any).thinking || (block as any).text || "";
         reasoningTexts.push(thinkingText);
-        transformedContent.push({
+        const transformed: Record<string, unknown> = {
           ...block,
           type: "reasoning",
           text: thinkingText,
           thought: true,
-        });
+        };
+
+        // Convert signature to providerMetadata format for OpenCode
+        const sig = (block as any).signature || (block as any).thoughtSignature;
+        if (sig) {
+          transformed.providerMetadata = {
+            anthropic: { signature: sig }
+          };
+          delete (transformed as any).signature;
+          delete (transformed as any).thoughtSignature;
+        }
+
+        transformedContent.push(transformed);
       } else {
         transformedContent.push(block);
       }
