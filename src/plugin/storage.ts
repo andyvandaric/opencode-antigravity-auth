@@ -186,6 +186,8 @@ export interface AccountMetadataV3 {
   rateLimitResetTimes?: RateLimitStateV3;
   coolingDownUntil?: number;
   cooldownReason?: CooldownReason;
+  /** Per-account device fingerprint for rate limit mitigation */
+  fingerprint?: import("./fingerprint").Fingerprint;
 }
 
 export interface AccountStorageV3 {
