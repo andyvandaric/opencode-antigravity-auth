@@ -27,7 +27,18 @@ const SERVER_ERROR_BACKOFF = 20_000;
 const UNKNOWN_BACKOFF = 60_000;
 const MIN_BACKOFF_MS = 2_000;
 
-export function parseRateLimitReason(reason?: string, message?: string): RateLimitReason {
+export function parseRateLimitReason(
+  reason: string | undefined, 
+  message: string | undefined, 
+  status?: number
+): RateLimitReason {
+  // 1. Status Code Checks (Rust parity)
+  // 529 = Site Overloaded, 503 = Service Unavailable -> Capacity issues
+  if (status === 529 || status === 503) return "MODEL_CAPACITY_EXHAUSTED";
+  // 500 = Internal Server Error -> Treat as Server Error (soft wait)
+  if (status === 500) return "SERVER_ERROR";
+
+  // 2. Explicit Reason String
   if (reason) {
     switch (reason.toUpperCase()) {
       case "QUOTA_EXHAUSTED": return "QUOTA_EXHAUSTED";
@@ -36,14 +47,31 @@ export function parseRateLimitReason(reason?: string, message?: string): RateLim
     }
   }
   
+  // 3. Message Text Scanning (Rust Regex parity)
   if (message) {
     const lower = message.toLowerCase();
-    if (lower.includes("per minute") || lower.includes("rate limit") || lower.includes("too many requests")) {
+    
+    // Capacity / Overloaded (Transient) - Check FIRST before "exhausted"
+    if (lower.includes("capacity") || lower.includes("overloaded") || lower.includes("resource exhausted")) {
+      return "MODEL_CAPACITY_EXHAUSTED";
+    }
+
+    // RPM / TPM (Short Wait)
+    // "per minute", "rate limit", "too many requests"
+    // "presque" (French: almost) - retained for i18n parity with Rust reference
+    if (lower.includes("per minute") || lower.includes("rate limit") || lower.includes("too many requests") || lower.includes("presque")) {
       return "RATE_LIMIT_EXCEEDED";
     }
+
+    // Quota (Long Wait)
     if (lower.includes("exhausted") || lower.includes("quota")) {
       return "QUOTA_EXHAUSTED";
     }
+  }
+  
+  // Default fallback for 429 without clearer info
+  if (status === 429) {
+    return "UNKNOWN"; 
   }
   
   return "UNKNOWN";
@@ -54,7 +82,9 @@ export function calculateBackoffMs(
   consecutiveFailures: number,
   retryAfterMs?: number | null
 ): number {
+  // Respect explicit Retry-After header if reasonable
   if (retryAfterMs && retryAfterMs > 0) {
+    // Rust uses 2s min buffer, we keep 2s
     return Math.max(retryAfterMs, MIN_BACKOFF_MS);
   }
   
@@ -64,14 +94,14 @@ export function calculateBackoffMs(
       return QUOTA_EXHAUSTED_BACKOFFS[index] ?? UNKNOWN_BACKOFF;
     }
     case "RATE_LIMIT_EXCEEDED":
-      return RATE_LIMIT_EXCEEDED_BACKOFF;
+      return RATE_LIMIT_EXCEEDED_BACKOFF; // 30s
     case "MODEL_CAPACITY_EXHAUSTED":
-      return MODEL_CAPACITY_EXHAUSTED_BACKOFF;
+      return MODEL_CAPACITY_EXHAUSTED_BACKOFF; // 15s
     case "SERVER_ERROR":
-      return SERVER_ERROR_BACKOFF;
+      return SERVER_ERROR_BACKOFF; // 20s
     case "UNKNOWN":
     default:
-      return UNKNOWN_BACKOFF;
+      return UNKNOWN_BACKOFF; // 60s
   }
 }
 

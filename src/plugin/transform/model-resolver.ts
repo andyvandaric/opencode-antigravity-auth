@@ -340,8 +340,10 @@ export function resolveModelForHeaderStyle(
     
     const isGemini3Pro = transformedModel.toLowerCase().startsWith("gemini-3-pro");
     const hasTierSuffix = /-(low|medium|high)$/i.test(transformedModel);
+    const isImageModel = IMAGE_GENERATION_MODELS.test(transformedModel);
     
-    if (isGemini3Pro && !hasTierSuffix) {
+    // Don't add tier suffix to image models - they don't support thinking
+    if (isGemini3Pro && !hasTierSuffix && !isImageModel) {
       transformedModel = `${transformedModel}-low`;
     }
     

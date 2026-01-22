@@ -1169,16 +1169,16 @@ describe("AccountManager", () => {
 
     describe("parseRateLimitReason", () => {
       it("parses QUOTA_EXHAUSTED from reason field", () => {
-        expect(parseRateLimitReason("QUOTA_EXHAUSTED")).toBe("QUOTA_EXHAUSTED");
-        expect(parseRateLimitReason("quota_exhausted")).toBe("QUOTA_EXHAUSTED");
+        expect(parseRateLimitReason("QUOTA_EXHAUSTED", undefined)).toBe("QUOTA_EXHAUSTED");
+        expect(parseRateLimitReason("quota_exhausted", undefined)).toBe("QUOTA_EXHAUSTED");
       });
 
       it("parses RATE_LIMIT_EXCEEDED from reason field", () => {
-        expect(parseRateLimitReason("RATE_LIMIT_EXCEEDED")).toBe("RATE_LIMIT_EXCEEDED");
+        expect(parseRateLimitReason("RATE_LIMIT_EXCEEDED", undefined)).toBe("RATE_LIMIT_EXCEEDED");
       });
 
       it("parses MODEL_CAPACITY_EXHAUSTED from reason field", () => {
-        expect(parseRateLimitReason("MODEL_CAPACITY_EXHAUSTED")).toBe("MODEL_CAPACITY_EXHAUSTED");
+        expect(parseRateLimitReason("MODEL_CAPACITY_EXHAUSTED", undefined)).toBe("MODEL_CAPACITY_EXHAUSTED");
       });
 
       it("falls back to message parsing when reason is absent", () => {
@@ -1189,7 +1189,7 @@ describe("AccountManager", () => {
 
       it("returns UNKNOWN when no pattern matches", () => {
         expect(parseRateLimitReason(undefined, "Some other error")).toBe("UNKNOWN");
-        expect(parseRateLimitReason()).toBe("UNKNOWN");
+        expect(parseRateLimitReason(undefined, undefined)).toBe("UNKNOWN");
       });
     });
 

@@ -1188,7 +1188,17 @@ export const createAntigravityPlugin = (providerId: string) => async (
             // Track if token was consumed (for hybrid strategy refund on error)
             let tokenConsumed = false;
             
+            // Track capacity retries per endpoint to prevent infinite loops
+            let capacityRetryCount = 0;
+            let lastEndpointIndex = -1;
+            
             for (let i = 0; i < ANTIGRAVITY_ENDPOINT_FALLBACKS.length; i++) {
+              // Reset capacity retry counter when switching to a new endpoint
+              if (i !== lastEndpointIndex) {
+                capacityRetryCount = 0;
+                lastEndpointIndex = i;
+              }
+
               const currentEndpoint = ANTIGRAVITY_ENDPOINT_FALLBACKS[i];
 
               try {
@@ -1238,8 +1248,8 @@ export const createAntigravityPlugin = (providerId: string) => async (
 
 
 
-                // Handle 429 rate limit with improved logic
-                if (response.status === 429) {
+                // Handle 429 rate limit (or Service Overloaded) with improved logic
+                if (response.status === 429 || response.status === 503 || response.status === 529) {
                   // Refund token on rate limit
                   if (tokenConsumed) {
                     getTokenTracker().refund(account.index);
@@ -1251,14 +1261,54 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   const headerRetryMs = retryAfterMsFromResponse(response, defaultRetryMs);
                   const bodyInfo = await extractRetryInfoFromBody(response);
                   const serverRetryMs = bodyInfo.retryDelayMs ?? headerRetryMs;
-                  const quotaKey = headerStyleToQuotaKey(headerStyle, family);
-                  const { attempt, delayMs, isDuplicate } = getRateLimitBackoff(account.index, quotaKey, serverRetryMs, maxBackoffMs);
 
-                  const rateLimitReason = parseRateLimitReason(bodyInfo.reason, bodyInfo.message);
+                  // [Enhanced Parsing] Pass status to handling logic
+                  const rateLimitReason = parseRateLimitReason(bodyInfo.reason, bodyInfo.message, response.status);
+
+                  // STRATEGY 1: CAPACITY / SERVER ERROR (Transient)
+                  // Goal: Wait and Retry SAME Account. DO NOT LOCK.
+                  // We handle this FIRST to avoid calling getRateLimitBackoff() and polluting the global rate limit state for transient errors.
+                  if (rateLimitReason === "MODEL_CAPACITY_EXHAUSTED" || rateLimitReason === "SERVER_ERROR") {
+                     // Use specific backoffs from accounts.ts constants
+                     // MODEL_CAPACITY_EXHAUSTED_BACKOFF = 15000
+                     // SERVER_ERROR_BACKOFF = 20000
+                     const smartBackoffMs = calculateBackoffMs(rateLimitReason, 0, serverRetryMs); // Pass 0 failures as we don't track them for capacity
+                     const waitMs = smartBackoffMs; 
+                     const waitSec = Math.round(waitMs / 1000);
+                     
+                     pushDebug(`Server busy (${rateLimitReason}) on account ${account.index}, soft wait ${waitMs}ms`);
+
+                     await showToast(
+                       `⏳ Server busy (${response.status}). Retrying in ${waitSec}s...`,
+                       "warning",
+                     );
+                     
+                     await sleep(waitMs, abortSignal);
+                     
+                     // CRITICAL FIX: Decrement i so that the loop 'continue' retries the SAME endpoint index
+                     // (i++ in the loop will bring it back to the current index)
+                     // But limit retries to prevent infinite loops (Greptile feedback)
+                     if (capacityRetryCount < 3) {
+                       capacityRetryCount++;
+                       i -= 1;
+                       continue; 
+                     } else {
+                       pushDebug(`Max capacity retries (3) exhausted for endpoint ${currentEndpoint}, trying next endpoint...`);
+                       // Do not decrement i, loop will advance to next endpoint
+                       continue;
+                     }
+                  }
+
+                  // STRATEGY 2: RATE LIMIT EXCEEDED (RPM) / QUOTA EXHAUSTED / UNKNOWN
+                  // Goal: Lock and Rotate (Standard Logic)
+                  
+                  // Only now do we call getRateLimitBackoff, which increments the global failure tracker
+                  const quotaKey = headerStyleToQuotaKey(headerStyle, family);
+                  const { attempt, delayMs, isDuplicate } = getRateLimitBackoff(account.index, quotaKey, serverRetryMs);
+                  
+                  // Calculate potential backoffs
                   const smartBackoffMs = calculateBackoffMs(rateLimitReason, account.consecutiveFailures ?? 0, serverRetryMs);
                   const effectiveDelayMs = Math.max(delayMs, smartBackoffMs);
-                  
-                  const isCapacityExhausted = rateLimitReason === "MODEL_CAPACITY_EXHAUSTED";
 
                   pushDebug(
                     `429 idx=${account.index} email=${account.email ?? ""} family=${family} delayMs=${effectiveDelayMs} attempt=${attempt} reason=${rateLimitReason}`,
@@ -1286,34 +1336,10 @@ export const createAntigravityPlugin = (providerId: string) => async (
 
                   getHealthTracker().recordRateLimit(account.index);
 
-                  if (isCapacityExhausted) {
-                    const capacityBackoffMs = calculateBackoffMs(rateLimitReason, account.consecutiveFailures ?? 0, serverRetryMs);
-                    accountManager.markRateLimitedWithReason(account, family, headerStyle, model, rateLimitReason, serverRetryMs);
-                    
-                    const backoffFormatted = formatWaitTime(capacityBackoffMs);
-                    const failures = account.consecutiveFailures ?? 0;
-                    pushDebug(`capacity exhausted on account ${account.index}, backoff=${capacityBackoffMs}ms (failure #${failures})`);
-
-                    // Check if we can switch to another account (respects switch_on_first_rate_limit config)
-                    if (config.switch_on_first_rate_limit && accountCount > 1) {
-                      await showToast(`Server at capacity. Switching account in 1s...`, "warning");
-                      await sleep(FIRST_RETRY_DELAY_MS, abortSignal);
-                      shouldSwitchAccount = true;
-                      break;
-                    }
-
-                    // No other accounts available or config disabled - wait the backoff
-                    await showToast(
-                      `Server at capacity. Waiting ${backoffFormatted}... (attempt ${failures})`,
-                      "warning",
-                    );
-                    await sleep(capacityBackoffMs, abortSignal);
-                    continue;
-                  }
-                  
                   const accountLabel = account.email || `Account ${account.index + 1}`;
 
-                  if (attempt === 1) {
+                  // Progressive retry for standard 429s: 1st 429 → 1s then switch (if enabled) or retry same
+                  if (attempt === 1 && rateLimitReason !== "QUOTA_EXHAUSTED") {
                     await showToast(`Rate limited. Quick retry in 1s...`, "warning");
                     await sleep(FIRST_RETRY_DELAY_MS, abortSignal);
                     
@@ -1322,6 +1348,9 @@ export const createAntigravityPlugin = (providerId: string) => async (
                       shouldSwitchAccount = true;
                       break;
                     }
+                    
+                    // Same endpoint retry for first RPM hit
+                    i -= 1; 
                     continue;
                   }
 
