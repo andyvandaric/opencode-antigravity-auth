@@ -1343,6 +1343,23 @@ export const createAntigravityPlugin = (providerId: string) => async (
                     await showToast(`Rate limited. Quick retry in 1s...`, "warning");
                     await sleep(FIRST_RETRY_DELAY_MS, abortSignal);
                     
+                    // CacheFirst mode: wait for same account if within threshold (preserves prompt cache)
+                    if (config.scheduling_mode === 'cache_first') {
+                      const maxCacheFirstWaitMs = config.max_cache_first_wait_seconds * 1000;
+                      // effectiveDelayMs is the backoff calculated for this account
+                      if (effectiveDelayMs <= maxCacheFirstWaitMs) {
+                        pushDebug(`cache_first: waiting ${effectiveDelayMs}ms for same account to recover`);
+                        await showToast(`⏳ Waiting ${Math.ceil(effectiveDelayMs / 1000)}s for same account (prompt cache preserved)...`, "info");
+                        accountManager.markRateLimitedWithReason(account, family, headerStyle, model, rateLimitReason, serverRetryMs);
+                        await sleep(effectiveDelayMs, abortSignal);
+                        // Retry same endpoint after wait
+                        i -= 1;
+                        continue;
+                      }
+                      // Wait time exceeds threshold, fall through to switch
+                      pushDebug(`cache_first: wait ${effectiveDelayMs}ms exceeds max ${maxCacheFirstWaitMs}ms, switching account`);
+                    }
+                    
                     if (config.switch_on_first_rate_limit && accountCount > 1) {
                       accountManager.markRateLimitedWithReason(account, family, headerStyle, model, rateLimitReason, serverRetryMs, config.failure_ttl_seconds * 1000);
                       shouldSwitchAccount = true;
