@@ -1379,9 +1379,8 @@ export const createAntigravityPlugin = (providerId: string) => async (
             let shouldSwitchAccount = false;
             
             // Determine header style from model suffix:
-            // - Models with :antigravity suffix -> use Antigravity quota
-            // - Models without suffix (default) -> use Gemini CLI quota
-            // - Claude models -> always use Antigravity
+            // - Gemini models default to Antigravity
+            // - Claude models always use Antigravity
             let headerStyle = getHeaderStyleFromUrl(urlString, family);
             const explicitQuota = isExplicitQuotaFromUrl(urlString);
             pushDebug(`headerStyle=${headerStyle} explicit=${explicitQuota}`);
@@ -2618,10 +2617,10 @@ function getHeaderStyleFromUrl(urlString: string, family: ModelFamily): HeaderSt
   }
   const modelWithSuffix = extractModelFromUrlWithSuffix(urlString);
   if (!modelWithSuffix) {
-    return "gemini-cli";
+    return "antigravity";
   }
   const { quotaPreference } = resolveModelWithTier(modelWithSuffix);
-  return quotaPreference ?? "gemini-cli";
+  return quotaPreference === "gemini-cli" ? "antigravity" : (quotaPreference ?? "antigravity");
 }
 
 function isExplicitQuotaFromUrl(urlString: string): boolean {
@@ -2632,3 +2631,7 @@ function isExplicitQuotaFromUrl(urlString: string): boolean {
   const { explicitQuota } = resolveModelWithTier(modelWithSuffix);
   return explicitQuota ?? false;
 }
+
+export const __testExports = {
+  getHeaderStyleFromUrl,
+};
