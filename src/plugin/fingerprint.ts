@@ -21,11 +21,8 @@ const OS_VERSIONS: Record<string, string[]> = {
 const ARCHITECTURES = ["x64", "arm64"];
 
 const IDE_TYPES = [
+  "ANTIGRAVITY",
   "IDE_UNSPECIFIED",
-  "VSCODE",
-  "INTELLIJ",
-  "ANDROID_STUDIO",
-  "CLOUD_SHELL_EDITOR",
 ];
 
 const PLATFORMS = [
@@ -39,18 +36,13 @@ const SDK_CLIENTS = [
   "google-cloud-sdk vscode_cloudshelleditor/0.1",
   "google-cloud-sdk vscode/1.86.0",
   "google-cloud-sdk vscode/1.87.0",
-  "google-cloud-sdk intellij/2024.1",
-  "google-cloud-sdk android-studio/2024.1",
-  "gcloud-python/1.2.0 grpc-google-iam-v1/0.12.6",
+  "google-cloud-sdk vscode/1.96.0",
 ];
 
 export interface ClientMetadata {
   ideType: string;
   platform: string;
   pluginType: string;
-  osVersion: string;
-  arch: string;
-  sqmId?: string;
 }
 
 export interface Fingerprint {
@@ -59,8 +51,9 @@ export interface Fingerprint {
   userAgent: string;
   apiClient: string;
   clientMetadata: ClientMetadata;
-  quotaUser: string;
   createdAt: number;
+  /** @deprecated Kept for backward compat with stored fingerprints */
+  quotaUser?: string;
 }
 
 /**
@@ -78,10 +71,6 @@ export const MAX_FINGERPRINT_HISTORY = 5;
 
 export interface FingerprintHeaders {
   "User-Agent": string;
-  "X-Goog-Api-Client": string;
-  "Client-Metadata": string;
-  "X-Goog-QuotaUser": string;
-  "X-Client-Device-Id": string;
 }
 
 function randomFrom<T>(arr: readonly T[]): T {
@@ -123,11 +112,7 @@ export function generateFingerprint(): Fingerprint {
       ideType: randomFrom(IDE_TYPES),
       platform: matchingPlatform,
       pluginType: "GEMINI",
-      osVersion: osVersion,
-      arch: arch,
-      sqmId: `{${crypto.randomUUID().toUpperCase()}}`,
     },
-    quotaUser: `device-${crypto.randomBytes(8).toString("hex")}`,
     createdAt: Date.now(),
   };
 }
@@ -139,7 +124,6 @@ export function generateFingerprint(): Fingerprint {
 export function collectCurrentFingerprint(): Fingerprint {
   const platform = os.platform();
   const arch = os.arch();
-  const osRelease = os.release();
 
   const matchingPlatform =
     platform === "darwin"
@@ -156,14 +140,10 @@ export function collectCurrentFingerprint(): Fingerprint {
     userAgent: `antigravity/${getAntigravityVersion()} ${platform}/${arch}`,
     apiClient: "google-cloud-sdk vscode_cloudshelleditor/0.1",
     clientMetadata: {
-      ideType: "VSCODE",
+      ideType: "ANTIGRAVITY",
       platform: matchingPlatform,
       pluginType: "GEMINI",
-      osVersion: osRelease,
-      arch: arch,
-      sqmId: `{${crypto.randomUUID().toUpperCase()}}`, // Session-specific for current device
     },
-    quotaUser: `device-${crypto.createHash("sha256").update(os.hostname()).digest("hex").slice(0, 16)}`,
     createdAt: Date.now(),
   };
 }
@@ -179,10 +159,6 @@ export function buildFingerprintHeaders(fingerprint: Fingerprint | null): Partia
 
   return {
     "User-Agent": fingerprint.userAgent,
-    "X-Goog-Api-Client": fingerprint.apiClient,
-    "Client-Metadata": JSON.stringify(fingerprint.clientMetadata),
-    "X-Goog-QuotaUser": fingerprint.quotaUser,
-    "X-Client-Device-Id": fingerprint.deviceId,
   };
 }
 

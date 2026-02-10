@@ -14,7 +14,7 @@ const projectContextResultCache = new Map<string, ProjectContextResult>();
 const projectContextPendingCache = new Map<string, Promise<ProjectContextResult>>();
 
 const CODE_ASSIST_METADATA = {
-  ideType: "IDE_UNSPECIFIED",
+  ideType: "ANTIGRAVITY",
   platform: "PLATFORM_UNSPECIFIED",
   pluginType: "GEMINI",
 } as const;

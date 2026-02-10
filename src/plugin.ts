@@ -847,7 +847,7 @@ async function persistAccountPool(
     : (typeof stored?.activeIndex === "number" && Number.isFinite(stored.activeIndex) ? stored.activeIndex : 0);
 
   await saveAccounts({
-    version: 3,
+    version: 4,
     accounts,
     activeIndex: clampInt(activeIndex, 0, accounts.length - 1),
     activeIndexByFamily: {
@@ -2929,7 +2929,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 );
                 // Use saveAccountsReplace to bypass merge (otherwise deleted account gets merged back)
                 await saveAccountsReplace({
-                  version: 3,
+                  version: 4,
                   accounts: updatedAccounts,
                   activeIndex: 0,
                   activeIndexByFamily: { claude: 0, gemini: 0 },
@@ -3145,7 +3145,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                         lastUsed: Date.now(),
                       };
                       await saveAccounts({
-                        version: 3,
+                        version: 4,
                         accounts: updatedAccounts,
                         activeIndex: currentStorage.activeIndex,
                         activeIndexByFamily: currentStorage.activeIndexByFamily,

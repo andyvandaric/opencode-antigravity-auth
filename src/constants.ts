@@ -119,7 +119,6 @@ function getAntigravityUserAgents(): string[] {
 const ANTIGRAVITY_API_CLIENTS = [
   "google-cloud-sdk vscode_cloudshelleditor/0.1",
   "google-cloud-sdk vscode/1.96.0",
-  "google-cloud-sdk jetbrains/2024.3",
   "google-cloud-sdk vscode/1.95.0",
 ] as const;
 
