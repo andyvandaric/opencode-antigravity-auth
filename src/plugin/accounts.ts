@@ -1,5 +1,5 @@
 import { formatRefreshParts, parseRefreshParts } from "./auth";
-import { loadAccounts, saveAccounts, type AccountStorageV3, type AccountMetadataV3, type RateLimitStateV3, type ModelFamily, type HeaderStyle, type CooldownReason } from "./storage";
+import { loadAccounts, saveAccounts, type AccountStorageV4, type AccountMetadataV3, type RateLimitStateV3, type ModelFamily, type HeaderStyle, type CooldownReason } from "./storage";
 import type { OAuthAuthDetails, RefreshParts } from "./types";
 import type { AccountSelectionStrategy } from "./config/schema";
 import { getHealthTracker, getTokenTracker, selectHybridAccount, type AccountWithMetrics } from "./rotation";
@@ -318,7 +318,7 @@ export class AccountManager {
     return new AccountManager(authFallback, stored);
   }
 
-  constructor(authFallback?: OAuthAuthDetails, stored?: AccountStorageV3 | null) {
+  constructor(authFallback?: OAuthAuthDetails, stored?: AccountStorageV4 | null) {
     const authParts = authFallback ? parseRefreshParts(authFallback.refresh) : null;
 
     if (stored && stored.accounts.length === 0) {
@@ -359,8 +359,8 @@ export class AccountManager {
             coolingDownUntil: acc.coolingDownUntil,
             cooldownReason: acc.cooldownReason,
             touchedForQuota: {},
-            // Always regenerate fingerprint on load to pick up alignment changes
-            fingerprint: generateFingerprint(),
+            fingerprint: acc.fingerprint ?? generateFingerprint(),
+            fingerprintHistory: acc.fingerprintHistory ?? [],
             cachedQuota: acc.cachedQuota as Partial<Record<QuotaGroup, QuotaGroupSummary>> | undefined,
             cachedQuotaUpdatedAt: acc.cachedQuotaUpdatedAt,
             verificationRequired: acc.verificationRequired,
@@ -977,8 +977,8 @@ export class AccountManager {
     const claudeIndex = Math.max(0, this.currentAccountIndexByFamily.claude);
     const geminiIndex = Math.max(0, this.currentAccountIndexByFamily.gemini);
     
-    const storage: AccountStorageV3 = {
-      version: 3,
+    const storage: AccountStorageV4 = {
+      version: 4,
       accounts: this.accounts.map((a) => ({
         email: a.email,
         refreshToken: a.parts.refreshToken,
