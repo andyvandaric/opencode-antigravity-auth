@@ -572,7 +572,7 @@ describe("request.ts", () => {
       expect(headers.get("Authorization")).toBe("Bearer test-token");
     });
 
-    it("removes x-api-key header", () => {
+it("removes x-api-key header", () => {
       const result = prepareAntigravityRequest(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent",
         { method: "POST", body: JSON.stringify({ contents: [] }), headers: { "x-api-key": "old-key" } },
@@ -581,6 +581,32 @@ describe("request.ts", () => {
       );
       const headers = result.init.headers as Headers;
       expect(headers.get("x-api-key")).toBeNull();
+    });
+
+    it("removes x-goog-user-project header for antigravity headerStyle", () => {
+      const result = prepareAntigravityRequest(
+        "https://generativelanguage.googleapis.com/v1beta/models/claude-opus-4-6-thinking:generateContent",
+        { method: "POST", body: JSON.stringify({ contents: [] }), headers: { "x-goog-user-project": "my-project" } },
+        mockAccessToken,
+        mockProjectId,
+        undefined,
+        "antigravity"
+      );
+      const headers = result.init.headers as Headers;
+      expect(headers.get("x-goog-user-project")).toBeNull();
+    });
+
+    it("removes x-goog-user-project header for gemini-cli headerStyle", () => {
+      const result = prepareAntigravityRequest(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        { method: "POST", body: JSON.stringify({ contents: [] }), headers: { "x-goog-user-project": "my-project" } },
+        mockAccessToken,
+        mockProjectId,
+        undefined,
+        "gemini-cli"
+      );
+      const headers = result.init.headers as Headers;
+      expect(headers.get("x-goog-user-project")).toBeNull();
     });
 
     it("identifies Claude models correctly", () => {
