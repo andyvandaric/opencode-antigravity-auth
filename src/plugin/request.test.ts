@@ -596,7 +596,7 @@ it("removes x-api-key header", () => {
       expect(headers.get("x-goog-user-project")).toBeNull();
     });
 
-    it("preserves x-goog-user-project header for gemini-cli headerStyle", () => {
+    it("removes x-goog-user-project header for gemini-cli headerStyle", () => {
       const result = prepareAntigravityRequest(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
         { method: "POST", body: JSON.stringify({ contents: [] }), headers: { "x-goog-user-project": "my-project" } },
@@ -606,7 +606,7 @@ it("removes x-api-key header", () => {
         "gemini-cli"
       );
       const headers = result.init.headers as Headers;
-      expect(headers.get("x-goog-user-project")).toBe("my-project");
+      expect(headers.get("x-goog-user-project")).toBeNull();
     });
 
     it("identifies Claude models correctly", () => {
