@@ -839,7 +839,7 @@ export function extractVariantThinkingConfig(
 
   // Fallback: OpenCode may pass thinking config in generationConfig
   // instead of providerOptions (common when using model variants)
-  if (!result.thinkingBudget && !result.thinkingLevel && generationConfig) {
+  if (result.thinkingBudget === undefined && !result.thinkingLevel && generationConfig) {
     if (generationConfig.thinkingConfig && typeof generationConfig.thinkingConfig === "object") {
       const tc = generationConfig.thinkingConfig as Record<string, unknown>;
       if (typeof tc.thinkingBudget === "number") {

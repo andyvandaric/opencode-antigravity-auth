@@ -1727,6 +1727,14 @@ describe("extractVariantThinkingConfig", () => {
     });
   });
 
+  it("does not overwrite thinkingBudget: 0 from providerOptions with generationConfig fallback", () => {
+    const result = extractVariantThinkingConfig(
+      { google: { thinkingConfig: { thinkingBudget: 0 } } },
+      { thinkingConfig: { thinkingBudget: 8192 } },
+    );
+    expect(result).toEqual({ thinkingBudget: 0 });
+  });
+
   it("returns undefined when both sources have no thinking config", () => {
     expect(extractVariantThinkingConfig(undefined, {})).toBeUndefined();
     expect(extractVariantThinkingConfig(undefined, { temperature: 0.5 })).toBeUndefined();
