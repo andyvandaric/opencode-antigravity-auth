@@ -526,7 +526,7 @@ The correct key is `plugin` (singular):
 
 ```json
 {
-  "plugin": ["opencode-antigravity-auth@beta"]
+  "plugin": ["opencode-ag-auth@beta"]
 }
 ```
 
