@@ -832,6 +832,10 @@ export class AccountManager {
     if (account.consecutiveFailures) {
       account.consecutiveFailures = 0;
     }
+    // Auto-clear verification flags on successful request
+    if (account.verificationRequired) {
+      this.clearAccountVerificationRequired(account.index, true);
+    }
   }
 
   clearAllRateLimitsForFamily(
