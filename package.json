@@ -11,6 +11,10 @@
         "type": "git",
         "url": "git+https://github.com/andyvandaric/opencode-ag-auth.git"
     },
+    "publishConfig": {
+        "access": "public",
+        "registry": "https://registry.npmjs.org/"
+    },
     "homepage": "https://github.com/andyvandaric/opencode-ag-auth#readme",
     "bugs": {
         "url": "https://github.com/andyvandaric/opencode-ag-auth/issues"
@@ -43,7 +47,8 @@
         "test:coverage": "vitest run --coverage",
         "prepublishOnly": "pnpm run build",
         "test:e2e:models": "npx tsx script/test-models.ts",
-        "test:e2e:regression": "npx tsx script/test-regression.ts"
+        "test:e2e:regression": "npx tsx script/test-regression.ts",
+        "release": "npm version patch && git push --follow-tags"
     },
     "peerDependencies": {
         "typescript": "^5"
