@@ -183,6 +183,15 @@ function applyEnvOverrides(config: AntigravityConfig): AntigravityConfig {
       env.OPENCODE_ANTIGRAVITY_PID_OFFSET_ENABLED === "true"
         ? true
         : config.pid_offset_enabled,
+
+    // OPENCODE_ANTIGRAVITY_SOFT_QUOTA_THRESHOLD_PERCENT=70
+    soft_quota_threshold_percent: process.env
+      .OPENCODE_ANTIGRAVITY_SOFT_QUOTA_THRESHOLD_PERCENT
+      ? parseInt(
+          process.env.OPENCODE_ANTIGRAVITY_SOFT_QUOTA_THRESHOLD_PERCENT,
+          10,
+        )
+      : config.soft_quota_threshold_percent,
   };
 }
 

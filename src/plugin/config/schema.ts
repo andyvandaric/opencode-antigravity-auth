@@ -474,7 +474,7 @@ export const DEFAULT_CONFIG: AntigravityConfig = {
   default_retry_after_seconds: 60,
   max_backoff_seconds: 60,
   request_jitter_max_ms: 0,
-  soft_quota_threshold_percent: 90,
+  soft_quota_threshold_percent: 70,
   quota_refresh_interval_minutes: 15,
   soft_quota_cache_ttl_minutes: "auto",
   auto_update: true,
