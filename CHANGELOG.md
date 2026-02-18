@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.5.8] - 2026-02-19
+
+### Fixed
+
+- **Sonnet fallback**: retry `claude-sonnet-4-6` automatically when `claude-sonnet-4-6-thinking` returns 404 from antigravity backend.
+- **Windows E2E**: run model/regression scripts with `opencode.cmd` and `shell: true` on win32 to avoid spawn `ENOENT` failures.
+
+### Changed
+
+- **Model scripts**: normalize thinking model runs to use base model IDs plus explicit `--variant` for Sonnet/Opus checks.
+
+---
+
 
 ## [1.5.7] - 2026-02-18
 
