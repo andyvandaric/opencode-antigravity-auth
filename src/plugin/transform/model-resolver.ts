@@ -193,7 +193,9 @@ export function resolveModelWithTier(requestedModel: string, options: ModelResol
 
   let antigravityModel = modelWithoutQuota;
   if (skipAlias) {
-    if (isGemini3Flash && tier) {
+    if (isGemini3Pro && !isImageModel) {
+      antigravityModel = `gemini-3.1-pro`;
+    } else if (isGemini3Flash && tier) {
       antigravityModel = baseName;
     }
   }
@@ -405,8 +407,7 @@ export function resolveModelWithVariant(
 
     let actualModel = base.actualModel;
     if (isAntigravityGemini3Pro) {
-      const baseModel = base.actualModel.replace(/-(low|medium|high)$/, "");
-      actualModel = `${baseModel}-${level}`;
+      actualModel = base.actualModel.replace(/-(low|medium|high)$/, "");
     }
 
     return {
