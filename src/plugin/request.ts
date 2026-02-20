@@ -36,6 +36,7 @@ import {
   fixToolResponseGrouping,
   validateAndFixClaudeToolPairing,
   applyToolPairingFixes,
+  createSyntheticErrorResponse,
   injectParameterSignatures,
   injectToolHardeningInstruction,
   isThinkingCapableModel,
@@ -666,6 +667,10 @@ export function prepareAntigravityRequest(
   needsSignedThinkingWarmup?: boolean;
   headerStyle: HeaderStyle;
   thinkingRecoveryMessage?: string;
+  /** When set, caller should return this synthetic response without sending the request. */
+  contextOverflowResponse?: Response;
+  /** Human-readable toast message for context overflow. */
+  contextOverflowMessage?: string;
 } {
   const baseInit: RequestInit = { ...init };
   const headers = new Headers(init?.headers ?? {});
@@ -1389,6 +1394,41 @@ export function prepareAntigravityRequest(
             requestPayload.contents = closeToolLoopForThinking(requestPayload.contents);
 
             defaultSignatureStore.delete(signatureSessionKey);
+          }
+        }
+
+        // Proactive context overflow guard for Claude models
+        if (isClaude && headerStyle === "antigravity") {
+          const HARD_LIMIT = 200_000;
+          const resolvedThinkingBudget = typeof tierThinkingBudget === "number" && tierThinkingBudget > 0
+            ? tierThinkingBudget
+            : (isClaudeThinking ? 8_192 : 0);
+          const effectiveLimit = HARD_LIMIT - resolvedThinkingBudget - 5_000;
+
+          const estimateTokens = (obj: unknown): number => Math.ceil(JSON.stringify(obj).length / 4);
+          let estimatedInputTokens = 0;
+          if (requestPayload.systemInstruction) estimatedInputTokens += estimateTokens(requestPayload.systemInstruction);
+          if (Array.isArray(requestPayload.contents)) estimatedInputTokens += estimateTokens(requestPayload.contents);
+          if (Array.isArray(requestPayload.messages)) estimatedInputTokens += estimateTokens(requestPayload.messages);
+          if (Array.isArray(requestPayload.tools)) estimatedInputTokens += estimateTokens(requestPayload.tools);
+
+          if (estimatedInputTokens > effectiveLimit) {
+            const overBy = estimatedInputTokens - 200_000;
+            const overflowMsg = `[Antigravity] Context too long for ${requestedModel || effectiveModel}: ~${estimatedInputTokens.toLocaleString()} estimated tokens exceeds the 200,000 token limit by ~${overBy.toLocaleString()} tokens.\n\nUse /compact to compress your context, then retry.`;
+            const overflowToastMsg = `Context too long (~${Math.round(estimatedInputTokens / 1000)}k tokens). Use /compact to reduce size.`;
+
+            return {
+              request: input,
+              init: { ...baseInit, headers },
+              streaming,
+              requestedModel,
+              effectiveModel,
+              projectId: resolvedProjectId,
+              endpoint: transformedUrl,
+              headerStyle,
+              contextOverflowResponse: createSyntheticErrorResponse(overflowMsg, requestedModel || effectiveModel),
+              contextOverflowMessage: overflowToastMsg,
+            };
           }
         }
 
