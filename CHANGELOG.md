@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.6.0] - 2026-02-21
+
+### Added
+
+- **Proactive Context Overflow Guard** - Implemented a pre-flight token estimator for Claude models that prevents sending requests exceeding the ~200k token limit.
+- **Auto-Compact Integration** - Automatically triggers the OpenCode `/compact` command and notifies the user via toast when an overflow is detected, returning an actionable synthetic response.
+- **Session ID Tracking** - Captures and tracks OpenCode session IDs to enable programmatic command execution.
+
 ## [1.5.11] - 2026-02-20
 
 ### Fixed
