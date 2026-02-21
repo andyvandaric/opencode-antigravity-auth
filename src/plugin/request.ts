@@ -1403,7 +1403,10 @@ export function prepareAntigravityRequest(
           const resolvedThinkingBudget = typeof tierThinkingBudget === "number" && tierThinkingBudget > 0
             ? tierThinkingBudget
             : (isClaudeThinking ? 8_192 : 0);
-          const effectiveLimit = HARD_LIMIT - resolvedThinkingBudget - 5_000;
+          
+          // Use 195,000 as effective limit for safety. 
+          // 195,000 corresponds to "nurunin limit ke 195k" + subtract thinking budget
+          const effectiveLimit = 195_000 - resolvedThinkingBudget - 5_000;
 
           const estimateTokens = (obj: unknown): number => Math.ceil(JSON.stringify(obj).length / 4);
           let estimatedInputTokens = 0;

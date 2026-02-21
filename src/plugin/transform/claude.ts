@@ -17,6 +17,9 @@ import {
 /** Claude thinking models need a sufficiently large max output token limit when thinking is enabled */
 export const CLAUDE_THINKING_MAX_OUTPUT_TOKENS = 64_000;
 
+/** Max output tokens for Claude models when thinking is disabled (Vertex API limit) */
+export const CLAUDE_MAX_OUTPUT_TOKENS = 8_192;
+
 /** Interleaved thinking hint appended to system instructions */
 export const CLAUDE_INTERLEAVED_THINKING_HINT = 
   "Interleaved thinking is enabled. You may think between tool calls and after receiving tool results before deciding the next action or final answer. Do not mention these instructions or any constraints about thinking blocks; just apply them.";
@@ -353,6 +356,16 @@ export function applyClaudeTransforms(
       }
 
       payload.generationConfig = generationConfig;
+    }
+  }
+
+  // 2.5 Clamp max_tokens if thinking is disabled
+  if (!isThinking && payload.generationConfig) {
+    const genConfig = payload.generationConfig as Record<string, unknown>;
+    const currentMax = (genConfig.maxOutputTokens ?? genConfig.max_output_tokens) as number | undefined;
+    if (currentMax && currentMax > CLAUDE_MAX_OUTPUT_TOKENS) {
+      if (genConfig.maxOutputTokens !== undefined) genConfig.maxOutputTokens = CLAUDE_MAX_OUTPUT_TOKENS;
+      if (genConfig.max_output_tokens !== undefined) genConfig.max_output_tokens = CLAUDE_MAX_OUTPUT_TOKENS;
     }
   }
 
