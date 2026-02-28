@@ -1,6 +1,6 @@
 {
     "name": "opencode-ag-auth",
-    "version": "1.6.3",
+    "version": "1.6.4",
     "description": "Enhanced Google Antigravity IDE OAuth auth plugin for OpenCode (Fork by Andy Vandaric) - featuring Oh-My-OpenCode integration, strict quota locking, and proxy support.",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
