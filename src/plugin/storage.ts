@@ -348,12 +348,12 @@ export function getStoragePath(): string {
  */
 export { getConfigDir };
 
-const LOCK_OPTIONS = {
+export const LOCK_OPTIONS = {
   stale: 10000,
   retries: {
-    retries: 5,
+    retries: 20,
     minTimeout: 100,
-    maxTimeout: 1000,
+    maxTimeout: 2000,
     factor: 2,
   },
 };
