@@ -139,6 +139,23 @@ import {
   extractOAuthCallbackParams,
   parseOAuthCallbackInput,
 } from "./plugin/oauth-flow";
+import {
+  parseDurationToMs,
+  extractRateLimitBodyInfo,
+  extractRetryInfoFromBody,
+  retryAfterMsFromResponse,
+  formatWaitTime,
+  getRateLimitBackoff,
+  resetRateLimitState,
+  resetAllRateLimitStateForAccount,
+  trackAccountFailure,
+  resetAccountFailureState,
+  cleanupStaleTrackingState,
+  FIRST_RETRY_DELAY_MS,
+  SWITCH_ACCOUNT_DELAY_MS,
+  type RateLimitBodyInfo,
+} from "./plugin/rate-limit-handler";
+import { openBrowser, shouldSkipLocalServer } from "./plugin/browser";
 
 // Configure proxy if environment variables are set
 configureProxy();
@@ -223,37 +240,9 @@ async function triggerAsyncQuotaRefreshForAccount(
 
 // trackWarmupAttempt, markWarmupSuccess, clearWarmupAttempt imported from ./plugin/warmup
 
+// shouldSkipLocalServer and openBrowser imported from ./plugin/browser
 // isWSL, isWSL2, isRemoteEnvironment are imported from ./plugin/environment
 
-function shouldSkipLocalServer(): boolean {
-  return isWSL2() || isRemoteEnvironment();
-}
-
-async function openBrowser(url: string): Promise<boolean> {
-  try {
-    if (process.platform === "darwin") {
-      exec(`open "${url}"`);
-      return true;
-    }
-    if (process.platform === "win32") {
-      exec(`start "" "${url}"`);
-      return true;
-    }
-    if (isWSL()) {
-      try {
-        exec(`wslview "${url}"`);
-        return true;
-      } catch {}
-    }
-    if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
-      return false;
-    }
-    exec(`xdg-open "${url}"`);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 // verifyAccountAccess, extractVerificationErrorDetails, markStoredAccountVerificationRequired,
 // clearStoredAccountVerificationRequired, promptOAuthCallbackValue, promptOpenVerificationUrl,
@@ -400,337 +389,25 @@ function buildAuthSuccessFromStoredAccount(account: {
   };
 }
 
-function retryAfterMsFromResponse(
-  response: Response,
-  defaultRetryMs: number = 60_000,
-): number {
-  const retryAfterMsHeader = response.headers.get("retry-after-ms");
-  if (retryAfterMsHeader) {
-    const parsed = Number.parseInt(retryAfterMsHeader, 10);
-    if (!Number.isNaN(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-
-  const retryAfterHeader = response.headers.get("retry-after");
-  if (retryAfterHeader) {
-    const parsed = Number.parseInt(retryAfterHeader, 10);
-    if (!Number.isNaN(parsed) && parsed > 0) {
-      return parsed * 1000;
-    }
-  }
-
-  return defaultRetryMs;
-}
+// parseDurationToMs, extractRateLimitBodyInfo, extractRetryInfoFromBody, retryAfterMsFromResponse,
+// formatWaitTime, getRateLimitBackoff, resetRateLimitState, resetAllRateLimitStateForAccount,
+// trackAccountFailure, resetAccountFailureState, cleanupStaleTrackingState,
+// FIRST_RETRY_DELAY_MS, SWITCH_ACCOUNT_DELAY_MS — imported from ./plugin/rate-limit-handler
 
 /**
- * Parse Go-style duration strings to milliseconds.
- * Supports compound durations: "1h16m0.667s", "1.5s", "200ms", "5m30s"
- *
- * @param duration - Duration string in Go format
- * @returns Duration in milliseconds, or null if parsing fails
+ * Sleep for a given number of milliseconds, respecting an abort signal.
  */
-function parseDurationToMs(duration: string): number | null {
-  // Handle simple formats first for backwards compatibility
-  const simpleMatch = duration.match(/^(\d+(?:\.\d+)?)(ms|s|m|h)?$/i);
-  if (simpleMatch) {
-    const value = parseFloat(simpleMatch[1]!);
-    const unit = (simpleMatch[2] || "s").toLowerCase();
-    switch (unit) {
-      case "h":
-        return value * 3600 * 1000;
-      case "m":
-        return value * 60 * 1000;
-      case "s":
-        return value * 1000;
-      case "ms":
-        return value;
-      default:
-        return value * 1000;
+function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason instanceof Error ? signal.reason : new Error("Aborted"));
+      return;
     }
-  }
-
-  // Parse compound Go-style durations: "1h16m0.667s", "5m30s", etc.
-  const compoundRegex = /(\d+(?:\.\d+)?)(h|m(?!s)|s|ms)/gi;
-  let totalMs = 0;
-  let matchFound = false;
-  let match: RegExpExecArray | null;
-
-  match = compoundRegex.exec(duration);
-  while (match !== null) {
-    matchFound = true;
-    const value = parseFloat(match[1]!);
-    const unit = match[2]!.toLowerCase();
-    switch (unit) {
-      case "h":
-        totalMs += value * 3600 * 1000;
-        break;
-      case "m":
-        totalMs += value * 60 * 1000;
-        break;
-      case "s":
-        totalMs += value * 1000;
-        break;
-      case "ms":
-        totalMs += value;
-        break;
-    }
-    match = compoundRegex.exec(duration);
-  }
-
-  return matchFound ? totalMs : null;
-}
-
-interface RateLimitBodyInfo {
-  retryDelayMs: number | null;
-  message?: string;
-  quotaResetTime?: string;
-  reason?: string;
-}
-
-function extractRateLimitBodyInfo(body: unknown): RateLimitBodyInfo {
-  if (!body || typeof body !== "object") {
-    return { retryDelayMs: null };
-  }
-
-  const error = (body as { error?: unknown }).error;
-  const message =
-    error && typeof error === "object"
-      ? (error as { message?: string }).message
-      : undefined;
-
-  const details =
-    error && typeof error === "object"
-      ? (error as { details?: unknown[] }).details
-      : undefined;
-
-  let reason: string | undefined;
-  if (Array.isArray(details)) {
-    for (const detail of details) {
-      if (!detail || typeof detail !== "object") continue;
-      const type = (detail as { "@type"?: string })["@type"];
-      if (typeof type === "string" && type.includes("google.rpc.ErrorInfo")) {
-        const detailReason = (detail as { reason?: string }).reason;
-        if (typeof detailReason === "string") {
-          reason = detailReason;
-          break;
-        }
-      }
-    }
-
-    for (const detail of details) {
-      if (!detail || typeof detail !== "object") continue;
-      const type = (detail as { "@type"?: string })["@type"];
-      if (typeof type === "string" && type.includes("google.rpc.RetryInfo")) {
-        const retryDelay = (detail as { retryDelay?: string }).retryDelay;
-        if (typeof retryDelay === "string") {
-          const retryDelayMs = parseDurationToMs(retryDelay);
-          if (retryDelayMs !== null) {
-            return { retryDelayMs, message, reason };
-          }
-        }
-      }
-    }
-
-    for (const detail of details) {
-      if (!detail || typeof detail !== "object") continue;
-      const metadata = (detail as { metadata?: Record<string, string> })
-        .metadata;
-      if (metadata && typeof metadata === "object") {
-        const quotaResetDelay = metadata.quotaResetDelay;
-        const quotaResetTime = metadata.quotaResetTimeStamp;
-        if (typeof quotaResetDelay === "string") {
-          const quotaResetDelayMs = parseDurationToMs(quotaResetDelay);
-          if (quotaResetDelayMs !== null) {
-            return {
-              retryDelayMs: quotaResetDelayMs,
-              message,
-              quotaResetTime,
-              reason,
-            };
-          }
-        }
-      }
-    }
-  }
-
-  if (message) {
-    const afterMatch = message.match(/reset after\s+([0-9hms.]+)/i);
-    const rawDuration = afterMatch?.[1];
-    if (rawDuration) {
-      const parsed = parseDurationToMs(rawDuration);
-      if (parsed !== null) {
-        return { retryDelayMs: parsed, message, reason };
-      }
-    }
-  }
-
-  return { retryDelayMs: null, message, reason };
-}
-
-async function extractRetryInfoFromBody(
-  response: Response,
-): Promise<RateLimitBodyInfo> {
-  try {
-    const text = await response.clone().text();
-    try {
-      const parsed = JSON.parse(text) as unknown;
-      return extractRateLimitBodyInfo(parsed);
-    } catch {
-      return { retryDelayMs: null };
-    }
-  } catch {
-    return { retryDelayMs: null };
-  }
-}
-
-function formatWaitTime(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = Math.ceil(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  if (minutes < 60) {
-    return remainingSeconds > 0
-      ? `${minutes}m ${remainingSeconds}s`
-      : `${minutes}m`;
-  }
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
-}
-
-// Progressive rate limit retry delays
-const FIRST_RETRY_DELAY_MS = 1000; // 1s - first 429 quick retry on same account
-const SWITCH_ACCOUNT_DELAY_MS = 5000; // 5s - delay before switching to another account
-
-/**
- * Rate limit state tracking with time-window deduplication.
- *
- * Problem: When multiple subagents hit 429 simultaneously, each would increment
- * the consecutive counter, causing incorrect exponential backoff (5 concurrent
- * 429s = 2^5 backoff instead of 2^1).
- *
- * Solution: Track per account+quota with deduplication window. Multiple 429s
- * within RATE_LIMIT_DEDUP_WINDOW_MS are treated as a single event.
- */
-const RATE_LIMIT_DEDUP_WINDOW_MS = 2000; // 2 seconds - concurrent requests within this window are deduplicated
-const RATE_LIMIT_STATE_RESET_MS = 120_000; // Reset consecutive counter after 2 minutes of no 429s
-
-interface RateLimitState {
-  consecutive429: number;
-  lastAt: number;
-  quotaKey: string; // Track which quota this state is for
-}
-
-// Key format: `${accountIndex}:${quotaKey}` for per-account-per-quota tracking
-const rateLimitStateByAccountQuota = new Map<string, RateLimitState>();
-const RATE_LIMIT_STATE_MAX_ENTRIES = 200;
-
-// Track empty response retry attempts (ported from LLM-API-Key-Proxy)
-const emptyResponseAttempts = new Map<string, number>();
-
-/**
- * Get rate limit backoff with time-window deduplication.
- *
- * @param accountIndex - The account index
- * @param quotaKey - The quota key (e.g., "gemini-cli", "gemini-antigravity", "claude")
- * @param serverRetryAfterMs - Server-provided retry delay (if any)
- * @param maxBackoffMs - Maximum backoff delay in milliseconds (default 60000)
- * @returns { attempt, delayMs, isDuplicate } - isDuplicate=true if within dedup window
- */
-function getRateLimitBackoff(
-  accountIndex: number,
-  quotaKey: string,
-  serverRetryAfterMs: number | null,
-  maxBackoffMs: number = 60_000,
-): { attempt: number; delayMs: number; isDuplicate: boolean } {
-  const now = Date.now();
-  const stateKey = `${accountIndex}:${quotaKey}`;
-  const previous = rateLimitStateByAccountQuota.get(stateKey);
-
-  // Check if this is a duplicate 429 within the dedup window
-  if (previous && now - previous.lastAt < RATE_LIMIT_DEDUP_WINDOW_MS) {
-    // Same rate limit event from concurrent request - don't increment
-    const baseDelay = serverRetryAfterMs ?? 1000;
-    const backoffDelay = Math.min(
-      baseDelay * Math.pow(2, previous.consecutive429 - 1),
-      maxBackoffMs,
-    );
-    return {
-      attempt: previous.consecutive429,
-      delayMs: Math.max(baseDelay, backoffDelay),
-      isDuplicate: true,
-    };
-  }
-
-  // Check if we should reset (no 429 for 2 minutes) or increment
-  const attempt =
-    previous && now - previous.lastAt < RATE_LIMIT_STATE_RESET_MS
-      ? previous.consecutive429 + 1
-      : 1;
-
-  rateLimitStateByAccountQuota.set(stateKey, {
-    consecutive429: attempt,
-    lastAt: now,
-    quotaKey,
+    const timeout = setTimeout(() => { cleanup(); resolve(); }, ms);
+    const onAbort = () => { cleanup(); reject(signal?.reason instanceof Error ? signal.reason : new Error("Aborted")); };
+    const cleanup = () => { clearTimeout(timeout); signal?.removeEventListener("abort", onAbort); };
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
-
-  const baseDelay = serverRetryAfterMs ?? 1000;
-  const backoffDelay = Math.min(
-    baseDelay * Math.pow(2, attempt - 1),
-    maxBackoffMs,
-  );
-  return {
-    attempt,
-    delayMs: Math.max(baseDelay, backoffDelay),
-    isDuplicate: false,
-  };
-}
-
-/**
- * Reset rate limit state for an account+quota combination.
- * Only resets the specific quota, not all quotas for the account.
- */
-function resetRateLimitState(accountIndex: number, quotaKey: string): void {
-  const stateKey = `${accountIndex}:${quotaKey}`;
-  rateLimitStateByAccountQuota.delete(stateKey);
-}
-
-/**
- * Reset all rate limit state for an account (all quotas).
- * Used when account is completely healthy.
- */
-function resetAllRateLimitStateForAccount(accountIndex: number): void {
-  for (const key of rateLimitStateByAccountQuota.keys()) {
-    if (key.startsWith(`${accountIndex}:`)) {
-      rateLimitStateByAccountQuota.delete(key);
-    }
-  }
-}
-
-/**
- * Evict stale entries from rateLimitStateByAccountQuota and accountFailureState
- * to prevent unbounded memory growth in long-running processes.
- */
-function cleanupStaleTrackingState(): void {
-  const now = Date.now();
-
-  // Clean rateLimitStateByAccountQuota — drop entries older than reset window
-  if (rateLimitStateByAccountQuota.size > RATE_LIMIT_STATE_MAX_ENTRIES) {
-    for (const [key, state] of rateLimitStateByAccountQuota) {
-      if (now - state.lastAt > RATE_LIMIT_STATE_RESET_MS) {
-        rateLimitStateByAccountQuota.delete(key);
-      }
-    }
-  }
-
-  // Clean accountFailureState — drop entries older than failure-state reset window
-  for (const [key, state] of accountFailureState) {
-    if (now - state.lastFailureAt > FAILURE_STATE_RESET_MS) {
-      accountFailureState.delete(key);
-    }
-  }
 }
 
 function headerStyleToQuotaKey(
@@ -741,76 +418,8 @@ function headerStyleToQuotaKey(
   return headerStyle === "antigravity" ? "gemini-antigravity" : "gemini-cli";
 }
 
-// Track consecutive non-429 failures per account to prevent infinite loops
-const accountFailureState = new Map<
-  number,
-  { consecutiveFailures: number; lastFailureAt: number }
->();
-const MAX_CONSECUTIVE_FAILURES = 5;
-const FAILURE_COOLDOWN_MS = 30_000; // 30 seconds cooldown after max failures
-const FAILURE_STATE_RESET_MS = 120_000; // Reset failure count after 2 minutes of no failures
-
-function trackAccountFailure(accountIndex: number): {
-  failures: number;
-  shouldCooldown: boolean;
-  cooldownMs: number;
-} {
-  const now = Date.now();
-  const previous = accountFailureState.get(accountIndex);
-
-  // Reset if last failure was more than 2 minutes ago
-  const failures =
-    previous && now - previous.lastFailureAt < FAILURE_STATE_RESET_MS
-      ? previous.consecutiveFailures + 1
-      : 1;
-
-  accountFailureState.set(accountIndex, {
-    consecutiveFailures: failures,
-    lastFailureAt: now,
-  });
-
-  const shouldCooldown = failures >= MAX_CONSECUTIVE_FAILURES;
-  const cooldownMs = shouldCooldown ? FAILURE_COOLDOWN_MS : 0;
-
-  return { failures, shouldCooldown, cooldownMs };
-}
-
-function resetAccountFailureState(accountIndex: number): void {
-  accountFailureState.delete(accountIndex);
-}
-
-/**
- * Sleep for a given number of milliseconds, respecting an abort signal.
- */
-function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(
-        signal.reason instanceof Error ? signal.reason : new Error("Aborted"),
-      );
-      return;
-    }
-
-    const timeout = setTimeout(() => {
-      cleanup();
-      resolve();
-    }, ms);
-
-    const onAbort = () => {
-      cleanup();
-      reject(
-        signal?.reason instanceof Error ? signal.reason : new Error("Aborted"),
-      );
-    };
-
-    const cleanup = () => {
-      clearTimeout(timeout);
-      signal?.removeEventListener("abort", onAbort);
-    };
-
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
+// Track empty response retry attempts per request-id
+const emptyResponseAttempts = new Map<string, number>();
 
 /**
  * Creates an Antigravity OAuth plugin for a specific provider ID.
