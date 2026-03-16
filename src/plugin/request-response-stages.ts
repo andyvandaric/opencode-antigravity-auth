@@ -29,6 +29,7 @@ type StreamingStageInput = {
   cacheSignatures: boolean
   sessionId?: string
   displayedThinkingHashes?: Set<string>
+  displayedThinkingHashesMaxSize?: number
   signatureStore: SignatureStore
   cacheSignature: (sessionKey: string, text: string, signature: string) => void
   injectDebugThinking: (response: unknown, debugText: string) => unknown
@@ -62,6 +63,38 @@ export type ThinkingRecoveryError = Error & {
   debugInfo: string
 }
 
+function applyRetryHeadersFromErrorDetails(
+  headers: Headers,
+  errorBody: { error?: { details?: unknown[] } },
+): void {
+  if (!Array.isArray(errorBody.error?.details)) {
+    return
+  }
+
+  const retryInfo = errorBody.error.details.find(
+    (detail) =>
+      isRecord(detail) &&
+      detail["@type"] === "type.googleapis.com/google.rpc.RetryInfo",
+  )
+
+  if (!isRecord(retryInfo) || typeof retryInfo.retryDelay !== "string") {
+    return
+  }
+
+  const match = retryInfo.retryDelay.match(/^([\d.]+)s$/)
+  if (!match || !match[1]) {
+    return
+  }
+
+  const retrySeconds = parseFloat(match[1])
+  if (isNaN(retrySeconds) || retrySeconds <= 0) {
+    return
+  }
+
+  headers.set("Retry-After", Math.ceil(retrySeconds).toString())
+  headers.set("retry-after-ms", Math.ceil(retrySeconds * 1000).toString())
+}
+
 export function buildResponseDebugText(
   debugLines: string[] | undefined,
   syntheticThinkingPlaceholder: string,
@@ -88,6 +121,7 @@ export function transformStreamingResponseStage(input: StreamingStageInput): Res
     cacheSignatures,
     sessionId,
     displayedThinkingHashes,
+    displayedThinkingHashesMaxSize,
     signatureStore,
     cacheSignature,
     injectDebugThinking,
@@ -114,6 +148,7 @@ export function transformStreamingResponseStage(input: StreamingStageInput): Res
       debugText,
       cacheSignatures,
       displayedThinkingHashes,
+      displayedThinkingHashesMaxSize,
     },
   )
 
@@ -162,6 +197,11 @@ export async function transformBufferedResponseStage(input: BufferedStageInput):
       errorBody = { error: { message: text } }
     }
 
+    applyRetryHeadersFromErrorDetails(
+      headers,
+      errorBody as { error?: { details?: unknown[] } },
+    )
+
     if (errorBody?.error) {
       const debugInfo = `\n\n[Debug Info]\nRequested Model: ${requestedModel || "Unknown"}\nEffective Model: ${effectiveModel || "Unknown"}\nProject: ${projectId || "Unknown"}\nEndpoint: ${endpoint || "Unknown"}\nStatus: ${response.status}\nRequest ID: ${headers.get("x-request-id") || "N/A"}${toolDebugMissing !== undefined ? `\nTool Debug Missing: ${toolDebugMissing}` : ""}${toolDebugSummary ? `\nTool Debug Summary: ${toolDebugSummary}` : ""}${toolDebugPayload ? `\nTool Debug Payload: ${toolDebugPayload}` : ""}`
       const injectedDebug = debugText ? `\n\n${debugText}` : ""
@@ -203,25 +243,6 @@ export async function transformBufferedResponseStage(input: BufferedStageInput):
         statusText: response.statusText,
         headers,
       })
-    }
-
-    if (errorBody?.error?.details && Array.isArray(errorBody.error.details)) {
-      const retryInfo = errorBody.error.details.find(
-        (detail) =>
-          isRecord(detail) &&
-          detail["@type"] === "type.googleapis.com/google.rpc.RetryInfo",
-      )
-
-      if (isRecord(retryInfo) && typeof retryInfo.retryDelay === "string") {
-        const match = retryInfo.retryDelay.match(/^([\d.]+)s$/)
-        if (match && match[1]) {
-          const retrySeconds = parseFloat(match[1])
-          if (!isNaN(retrySeconds) && retrySeconds > 0) {
-            headers.set("Retry-After", Math.ceil(retrySeconds).toString())
-            headers.set("retry-after-ms", Math.ceil(retrySeconds * 1000).toString())
-          }
-        }
-      }
     }
   }
 
