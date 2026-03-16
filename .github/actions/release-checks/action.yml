@@ -12,6 +12,10 @@ runs:
       shell: bash
       run: pnpm run typecheck
 
+    - name: Run routing smoke test
+      shell: bash
+      run: pnpm vitest run src/plugin/integration-routing-smoke.test.ts
+
     - name: Run tests
       shell: bash
       run: pnpm test
