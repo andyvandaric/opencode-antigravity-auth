@@ -225,6 +225,14 @@ export interface AccountStorageV4 {
   };
 }
 
+export type LoadAccountsStatus = "ok" | "not_found" | "unreadable" | "invalid";
+
+export interface LoadAccountsResult {
+  status: LoadAccountsStatus;
+  storage?: AccountStorageV4;
+  error?: string;
+}
+
 type AnyAccountStorage =
   | AccountStorageV1
   | AccountStorage
@@ -588,22 +596,47 @@ export function migrateV3ToV4(v3: AccountStorageV3): AccountStorageV4 {
   };
 }
 
-export async function loadAccounts(): Promise<AccountStorageV4 | null> {
+export async function loadAccountsWithStatus(): Promise<LoadAccountsResult> {
+  const path = getStoragePath();
+
+  let content: string;
   try {
-    const path = getStoragePath();
     // Ensure permissions are correct on load (fixes existing files)
     await ensureSecurePermissions(path);
-
-    const content = await fs.readFile(path, "utf-8");
-    const data = JSON.parse(content) as AnyAccountStorage;
-
-    if (!Array.isArray(data.accounts)) {
-      log.warn("Invalid storage format, ignoring");
-      return null;
+    content = await fs.readFile(path, "utf-8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      return { status: "not_found" };
     }
+    log.error("Failed to read account storage", { error: String(error) });
+    return {
+      status: "unreadable",
+      error: String(error),
+    };
+  }
 
-    let storage: AccountStorageV4;
+  let data: AnyAccountStorage;
+  try {
+    data = JSON.parse(content) as AnyAccountStorage;
+  } catch (error) {
+    log.warn("Invalid JSON in account storage", { error: String(error) });
+    return {
+      status: "invalid",
+      error: String(error),
+    };
+  }
 
+  if (!Array.isArray(data.accounts)) {
+    log.warn("Invalid storage format, ignoring");
+    return {
+      status: "invalid",
+      error: "Missing accounts array",
+    };
+  }
+
+  let storage: AccountStorageV4;
+  try {
     if (data.version === 1) {
       log.info("Migrating account storage from v1 to v4");
       const v2 = migrateV1ToV2(data);
@@ -646,7 +679,10 @@ export async function loadAccounts(): Promise<AccountStorageV4 | null> {
       log.warn("Unknown storage version, ignoring", {
         version: (data as { version?: unknown }).version,
       });
-      return null;
+      return {
+        status: "invalid",
+        error: `Unknown storage version: ${(data as { version?: unknown }).version}`,
+      };
     }
 
     // Validate accounts have required fields
@@ -677,19 +713,29 @@ export async function loadAccounts(): Promise<AccountStorageV4 | null> {
     }
 
     return {
-      version: 4,
-      accounts: deduplicatedAccounts,
-      activeIndex,
-      activeIndexByFamily: storage.activeIndexByFamily,
+      status: "ok",
+      storage: {
+        version: 4,
+        accounts: deduplicatedAccounts,
+        activeIndex,
+        activeIndexByFamily: storage.activeIndexByFamily,
+      },
     };
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") {
-      return null;
-    }
     log.error("Failed to load account storage", { error: String(error) });
-    return null;
+    return {
+      status: "invalid",
+      error: String(error),
+    };
   }
+}
+
+export async function loadAccounts(): Promise<AccountStorageV4 | null> {
+  const result = await loadAccountsWithStatus();
+  if (result.status === "ok") {
+    return result.storage ?? null;
+  }
+  return null;
 }
 
 export async function saveAccounts(storage: AccountStorageV4): Promise<void> {

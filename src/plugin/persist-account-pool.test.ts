@@ -399,10 +399,43 @@ describe("regression tests", () => {
  */
 describe("proposed fix validation", () => {
   describe("loadAccounts should distinguish error types", () => {
-    it.todo("should return { error: 'ENOENT' } when file doesn't exist");
-    it.todo("should return { error: 'PERMISSION_DENIED' } on EACCES");
-    it.todo("should return { error: 'PARSE_ERROR' } on invalid JSON");
-    it.todo("should return { error: 'INVALID_FORMAT' } on schema mismatch");
+    it("returns not_found when file doesn't exist", async () => {
+      const error = new Error("ENOENT") as NodeJS.ErrnoException;
+      error.code = "ENOENT";
+      vi.mocked(fs.readFile).mockRejectedValue(error);
+
+      const result = await storageModule.loadAccountsWithStatus();
+      expect(result.status).toBe("not_found");
+      expect(result.storage).toBeUndefined();
+    });
+
+    it("returns unreadable on EACCES", async () => {
+      const error = new Error("EACCES") as NodeJS.ErrnoException;
+      error.code = "EACCES";
+      vi.mocked(fs.readFile).mockRejectedValue(error);
+
+      const result = await storageModule.loadAccountsWithStatus();
+      expect(result.status).toBe("unreadable");
+      expect(typeof result.error).toBe("string");
+    });
+
+    it("returns invalid on malformed JSON", async () => {
+      vi.mocked(fs.readFile).mockResolvedValue("{ invalid json }");
+
+      const result = await storageModule.loadAccountsWithStatus();
+      expect(result.status).toBe("invalid");
+      expect(typeof result.error).toBe("string");
+    });
+
+    it("returns invalid on schema mismatch", async () => {
+      vi.mocked(fs.readFile).mockResolvedValue(
+        JSON.stringify({ version: 4, notAccounts: [] }),
+      );
+
+      const result = await storageModule.loadAccountsWithStatus();
+      expect(result.status).toBe("invalid");
+      expect(result.storage).toBeUndefined();
+    });
   });
 
   describe("persistAccountPool should handle errors safely", () => {
