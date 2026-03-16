@@ -69,17 +69,29 @@ export interface ThinkingCacheData {
 // Path Utilities
 // =============================================================================
 
-function getConfigDir(): string {
-  const platform = process.platform;
-  if (platform === "win32") {
-    return join(process.env.APPDATA || join(homedir(), "AppData", "Roaming"), "opencode");
+function resolveConfigDir(
+  env: NodeJS.ProcessEnv,
+  _platform: NodeJS.Platform,
+  homeDir: string,
+): string {
+  if (env.OPENCODE_CONFIG_DIR) {
+    return env.OPENCODE_CONFIG_DIR;
   }
-  const xdgConfig = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+
+  const xdgConfig = env.XDG_CONFIG_HOME || join(homeDir, ".config");
   return join(xdgConfig, "opencode");
 }
 
+function getConfigDir(): string {
+  return resolveConfigDir(process.env, process.platform, homedir());
+}
+
+function resolveCacheFilePath(configDir: string): string {
+  return join(configDir, "antigravity-signature-cache.json");
+}
+
 function getCacheFilePath(): string {
-  return join(getConfigDir(), "antigravity-signature-cache.json");
+  return resolveCacheFilePath(getConfigDir());
 }
 
 // =============================================================================
@@ -471,3 +483,8 @@ export function createSignatureCache(config: SignatureCacheConfig | undefined): 
 
   return new SignatureCache(config);
 }
+
+export const __testExports = {
+  resolveConfigDir,
+  resolveCacheFilePath,
+};
