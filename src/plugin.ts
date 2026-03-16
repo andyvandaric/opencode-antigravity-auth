@@ -156,6 +156,17 @@ import {
   type RateLimitBodyInfo,
 } from "./plugin/rate-limit-handler";
 import { openBrowser, shouldSkipLocalServer } from "./plugin/browser";
+import {
+  toUrlString,
+  toWarmupStreamUrl,
+  extractModelFromUrl,
+  getModelFamilyFromUrl,
+  resolveHeaderRoutingDecision,
+  getSoftQuotaThresholdForHeaderStyle,
+  getHeaderStyleFromUrl,
+  resolveQuotaFallbackHeaderStyle,
+  type HeaderRoutingDecision,
+} from "./plugin/request-url";
 
 // Configure proxy if environment variables are set
 configureProxy();
@@ -3569,139 +3580,10 @@ export const AntigravityCLIOAuthPlugin = createAntigravityPlugin(
 );
 export const GoogleOAuthPlugin = AntigravityCLIOAuthPlugin;
 
-function toUrlString(value: RequestInfo): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  const candidate = (value as Request).url;
-  if (candidate) {
-    return candidate;
-  }
-  return value.toString();
-}
-
-function toWarmupStreamUrl(value: RequestInfo): string {
-  const urlString = toUrlString(value);
-  try {
-    const url = new URL(urlString);
-    if (!url.pathname.includes(":streamGenerateContent")) {
-      url.pathname = url.pathname.replace(
-        ":generateContent",
-        ":streamGenerateContent",
-      );
-    }
-    url.searchParams.set("alt", "sse");
-    return url.toString();
-  } catch {
-    return urlString;
-  }
-}
-
-function extractModelFromUrl(urlString: string): string | null {
-  const match = urlString.match(/\/models\/([^:\/?]+)(?::\w+)?/);
-  return match?.[1] ?? null;
-}
-
-function extractModelFromUrlWithSuffix(urlString: string): string | null {
-  const match = urlString.match(/\/models\/([^:\/\?]+)/);
-  return match?.[1] ?? null;
-}
-
-function getModelFamilyFromUrl(urlString: string): ModelFamily {
-  const model = extractModelFromUrl(urlString);
-  let family: ModelFamily = "gemini";
-  if (model && model.includes("claude")) {
-    family = "claude";
-  }
-  if (isDebugEnabled()) {
-    logModelFamily(urlString, model, family);
-  }
-  return family;
-}
-
-function resolveQuotaFallbackHeaderStyle(input: {
-  family: ModelFamily;
-  headerStyle: HeaderStyle;
-  alternateStyle: HeaderStyle | null;
-}): HeaderStyle | null {
-  if (input.family !== "gemini") {
-    return null;
-  }
-  if (!input.alternateStyle || input.alternateStyle === input.headerStyle) {
-    return null;
-  }
-  return input.alternateStyle;
-}
-
-type HeaderRoutingDecision = {
-  cliFirst: boolean;
-  preferredHeaderStyle: HeaderStyle;
-  explicitQuota: boolean;
-  allowQuotaFallback: boolean;
-};
-
-function resolveHeaderRoutingDecision(
-  urlString: string,
-  family: ModelFamily,
-  config: AntigravityConfig,
-): HeaderRoutingDecision {
-  const cliFirst = getCliFirst(config);
-  const preferredHeaderStyle = getHeaderStyleFromUrl(
-    urlString,
-    family,
-    cliFirst,
-  );
-  const explicitQuota = isExplicitQuotaFromUrl(urlString);
-  return {
-    cliFirst,
-    preferredHeaderStyle,
-    explicitQuota,
-    allowQuotaFallback: family === "gemini",
-  };
-}
-
-function getSoftQuotaThresholdForHeaderStyle(
-  config: AntigravityConfig,
-  headerStyle: HeaderStyle,
-): number {
-  if (config.allow_ai_credit_overages && headerStyle === "antigravity") {
-    return 100;
-  }
-  return config.soft_quota_threshold_percent;
-}
-
-function getCliFirst(config: AntigravityConfig): boolean {
-  return (
-    (config as AntigravityConfig & { cli_first?: boolean }).cli_first ?? false
-  );
-}
-
-function getHeaderStyleFromUrl(
-  urlString: string,
-  family: ModelFamily,
-  cliFirst: boolean = false,
-): HeaderStyle {
-  if (family === "claude") {
-    return "antigravity";
-  }
-  const modelWithSuffix = extractModelFromUrlWithSuffix(urlString);
-  if (!modelWithSuffix) {
-    return cliFirst ? "gemini-cli" : "antigravity";
-  }
-  const { quotaPreference } = resolveModelWithTier(modelWithSuffix, {
-    cli_first: cliFirst,
-  });
-  return quotaPreference ?? "antigravity";
-}
-
-function isExplicitQuotaFromUrl(urlString: string): boolean {
-  const modelWithSuffix = extractModelFromUrlWithSuffix(urlString);
-  if (!modelWithSuffix) {
-    return false;
-  }
-  const { explicitQuota } = resolveModelWithTier(modelWithSuffix);
-  return explicitQuota ?? false;
-}
+// toUrlString, toWarmupStreamUrl, extractModelFromUrl, getModelFamilyFromUrl,
+// isGenerativeLanguageRequest, resolveHeaderRoutingDecision,
+// getSoftQuotaThresholdForHeaderStyle, getHeaderStyleFromUrl,
+// resolveQuotaFallbackHeaderStyle — imported from ./plugin/request-url
 
 export const __testExports = {
   getHeaderStyleFromUrl,
