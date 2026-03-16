@@ -107,13 +107,43 @@ import type {
 } from "./plugin/types";
 import { configureProxy } from "./plugin/proxy";
 import { isWSL, isWSL2, isRemoteEnvironment } from "./plugin/environment";
+import {
+  shouldShowRateLimitToast,
+  resetAllAccountsBlockedToasts,
+  getSoftQuotaToastShown,
+  setSoftQuotaToastShown,
+  getRateLimitToastShown,
+  setRateLimitToastShown,
+} from "./plugin/toast-manager";
+import {
+  trackWarmupAttempt,
+  markWarmupSuccess,
+  clearWarmupAttempt,
+  MAX_WARMUP_RETRIES,
+} from "./plugin/warmup";
+import {
+  verifyAccountAccess,
+  extractVerificationErrorDetails,
+  markStoredAccountVerificationRequired,
+  clearStoredAccountVerificationRequired,
+  type VerificationProbeResult,
+  type VerificationStoredAccount,
+} from "./plugin/verification";
+import {
+  promptOAuthCallbackValue,
+  promptOpenVerificationUrl,
+  promptAccountIndexForVerification,
+  promptManualOAuthInput,
+  getStateFromAuthorizationUrl,
+  getOAuthListenerRedirectUri,
+  extractOAuthCallbackParams,
+  parseOAuthCallbackInput,
+} from "./plugin/oauth-flow";
 
 // Configure proxy if environment variables are set
 configureProxy();
 
 const MAX_OAUTH_ACCOUNTS = 10;
-const MAX_WARMUP_SESSIONS = 1000;
-const MAX_WARMUP_RETRIES = 2;
 const CAPACITY_BACKOFF_TIERS_MS = [5000, 10000, 20000, 30000, 60000];
 
 function getCapacityBackoffDelay(consecutiveFailures: number): number {
@@ -123,8 +153,6 @@ function getCapacityBackoffDelay(consecutiveFailures: number): number {
   );
   return CAPACITY_BACKOFF_TIERS_MS[Math.max(0, index)] ?? 5000;
 }
-const warmupAttemptedSessionIds = new Set<string>();
-const warmupSucceededSessionIds = new Set<string>();
 
 // Track if this plugin instance is running in a child session (subagent, background task)
 // Used to filter toasts based on toast_scope config
@@ -135,46 +163,8 @@ let currentOpenCodeSessionId: string | undefined = undefined;
 
 const log = createLogger("plugin");
 
-// Module-level toast debounce to persist across requests (fixes toast spam)
-const rateLimitToastCooldowns = new Map<string, number>();
-const RATE_LIMIT_TOAST_COOLDOWN_MS = 5000;
-const MAX_TOAST_COOLDOWN_ENTRIES = 100;
-
-// Track if "all accounts blocked" toasts were shown to prevent spam in while loop
-let softQuotaToastShown = false;
-let rateLimitToastShown = false;
-
 // Module-level reference to AccountManager for access from auth.login
-let activeAccountManager: import("./plugin/accounts").AccountManager | null =
-  null;
-
-function cleanupToastCooldowns(): void {
-  if (rateLimitToastCooldowns.size > MAX_TOAST_COOLDOWN_ENTRIES) {
-    const now = Date.now();
-    for (const [key, time] of rateLimitToastCooldowns) {
-      if (now - time > RATE_LIMIT_TOAST_COOLDOWN_MS * 2) {
-        rateLimitToastCooldowns.delete(key);
-      }
-    }
-  }
-}
-
-function shouldShowRateLimitToast(message: string): boolean {
-  cleanupToastCooldowns();
-  const toastKey = message.replace(/\d+/g, "X");
-  const lastShown = rateLimitToastCooldowns.get(toastKey) ?? 0;
-  const now = Date.now();
-  if (now - lastShown < RATE_LIMIT_TOAST_COOLDOWN_MS) {
-    return false;
-  }
-  rateLimitToastCooldowns.set(toastKey, now);
-  return true;
-}
-
-function resetAllAccountsBlockedToasts(): void {
-  softQuotaToastShown = false;
-  rateLimitToastShown = false;
-}
+let activeAccountManager: import("./plugin/accounts").AccountManager | null = null;
 
 const quotaRefreshInProgressByEmail = new Set<string>();
 
@@ -231,40 +221,7 @@ async function triggerAsyncQuotaRefreshForAccount(
   }
 }
 
-function trackWarmupAttempt(sessionId: string): boolean {
-  if (warmupSucceededSessionIds.has(sessionId)) {
-    return false;
-  }
-  if (warmupAttemptedSessionIds.size >= MAX_WARMUP_SESSIONS) {
-    const first = warmupAttemptedSessionIds.values().next().value;
-    if (first) {
-      warmupAttemptedSessionIds.delete(first);
-      warmupSucceededSessionIds.delete(first);
-    }
-  }
-  const attempts = getWarmupAttemptCount(sessionId);
-  if (attempts >= MAX_WARMUP_RETRIES) {
-    return false;
-  }
-  warmupAttemptedSessionIds.add(sessionId);
-  return true;
-}
-
-function getWarmupAttemptCount(sessionId: string): number {
-  return warmupAttemptedSessionIds.has(sessionId) ? 1 : 0;
-}
-
-function markWarmupSuccess(sessionId: string): void {
-  warmupSucceededSessionIds.add(sessionId);
-  if (warmupSucceededSessionIds.size >= MAX_WARMUP_SESSIONS) {
-    const first = warmupSucceededSessionIds.values().next().value;
-    if (first) warmupSucceededSessionIds.delete(first);
-  }
-}
-
-function clearWarmupAttempt(sessionId: string): void {
-  warmupAttemptedSessionIds.delete(sessionId);
-}
+// trackWarmupAttempt, markWarmupSuccess, clearWarmupAttempt imported from ./plugin/warmup
 
 // isWSL, isWSL2, isRemoteEnvironment are imported from ./plugin/environment
 
@@ -298,601 +255,12 @@ async function openBrowser(url: string): Promise<boolean> {
   }
 }
 
-type VerificationProbeResult = {
-  status: "ok" | "blocked" | "error";
-  message: string;
-  verifyUrl?: string;
-  verificationRequiredType?:
-    | "gemini-cli"
-    | "api-enable"
-    | "google-account"
-    | "unknown";
-};
+// verifyAccountAccess, extractVerificationErrorDetails, markStoredAccountVerificationRequired,
+// clearStoredAccountVerificationRequired, promptOAuthCallbackValue, promptOpenVerificationUrl,
+// promptAccountIndexForVerification, promptManualOAuthInput, getStateFromAuthorizationUrl,
+// getOAuthListenerRedirectUri, extractOAuthCallbackParams
+// — all imported from ./plugin/verification and ./plugin/oauth-flow
 
-function decodeEscapedText(input: string): string {
-  return input
-    .replace(/&amp;/g, "&")
-    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex: string) =>
-      String.fromCharCode(Number.parseInt(hex, 16)),
-    );
-}
-
-function normalizeGoogleVerificationUrl(rawUrl: string): string | undefined {
-  const normalized = decodeEscapedText(rawUrl).trim();
-  if (!normalized) {
-    return undefined;
-  }
-  try {
-    const parsed = new URL(normalized);
-    if (parsed.hostname !== "accounts.google.com") {
-      return undefined;
-    }
-    return parsed.toString();
-  } catch {
-    return undefined;
-  }
-}
-
-function selectBestVerificationUrl(urls: string[]): string | undefined {
-  const unique = Array.from(
-    new Set(
-      urls
-        .map((url) => normalizeGoogleVerificationUrl(url))
-        .filter(Boolean) as string[],
-    ),
-  );
-  if (unique.length === 0) {
-    return undefined;
-  }
-  unique.sort((a, b) => {
-    const score = (value: string): number => {
-      let total = 0;
-      if (value.includes("plt=")) total += 4;
-      if (value.includes("/signin/continue")) total += 3;
-      if (value.includes("continue=")) total += 2;
-      if (value.includes("service=cloudcode")) total += 1;
-      return total;
-    };
-    return score(b) - score(a);
-  });
-  return unique[0];
-}
-
-function extractVerificationErrorDetails(bodyText: string): {
-  validationRequired: boolean;
-  message?: string;
-  verifyUrl?: string;
-  verificationRequiredType?:
-    | "gemini-cli"
-    | "api-enable"
-    | "google-account"
-    | "unknown";
-} {
-  const decodedBody = decodeEscapedText(bodyText);
-  const lowerBody = decodedBody.toLowerCase();
-  let validationRequired = lowerBody.includes("validation_required");
-  let message: string | undefined;
-  const verificationUrls = new Set<string>();
-
-  const collectUrlsFromText = (text: string): void => {
-    for (const match of text.matchAll(
-      /https:\/\/accounts\.google\.com\/[^\s"'<>]+/gi,
-    )) {
-      if (match[0]) {
-        verificationUrls.add(match[0]);
-      }
-    }
-  };
-
-  collectUrlsFromText(decodedBody);
-
-  const payloads: unknown[] = [];
-  const trimmed = decodedBody.trim();
-  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-    try {
-      payloads.push(JSON.parse(trimmed));
-    } catch {}
-  }
-
-  for (const rawLine of decodedBody.split("\n")) {
-    const line = rawLine.trim();
-    if (!line.startsWith("data:")) {
-      continue;
-    }
-    const payloadText = line.slice(5).trim();
-    if (!payloadText || payloadText === "[DONE]") {
-      continue;
-    }
-    try {
-      payloads.push(JSON.parse(payloadText));
-    } catch {
-      collectUrlsFromText(payloadText);
-    }
-  }
-
-  const visited = new Set<unknown>();
-  const walk = (value: unknown, key?: string): void => {
-    if (typeof value === "string") {
-      const normalizedValue = decodeEscapedText(value);
-      const lowerValue = normalizedValue.toLowerCase();
-      const lowerKey = key?.toLowerCase() ?? "";
-
-      if (lowerValue.includes("validation_required")) {
-        validationRequired = true;
-      }
-      if (
-        !message &&
-        (lowerKey.includes("message") ||
-          lowerKey.includes("detail") ||
-          lowerKey.includes("description"))
-      ) {
-        message = normalizedValue;
-      }
-      if (
-        lowerKey.includes("validation_url") ||
-        lowerKey.includes("verify_url") ||
-        lowerKey.includes("verification_url") ||
-        lowerKey === "url"
-      ) {
-        verificationUrls.add(normalizedValue);
-      }
-      collectUrlsFromText(normalizedValue);
-      return;
-    }
-
-    if (!value || typeof value !== "object" || visited.has(value)) {
-      return;
-    }
-
-    visited.add(value);
-
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        walk(item);
-      }
-      return;
-    }
-
-    for (const [childKey, childValue] of Object.entries(
-      value as Record<string, unknown>,
-    )) {
-      walk(childValue, childKey);
-    }
-  };
-
-  for (const payload of payloads) {
-    walk(payload);
-  }
-
-  if (!validationRequired) {
-    validationRequired =
-      lowerBody.includes("verification required") ||
-      lowerBody.includes("verify your account") ||
-      lowerBody.includes("account verification");
-  }
-
-  if (!message) {
-    const fallback = decodedBody
-      .split("\n")
-      .map((line) => line.trim())
-      .find(
-        (line) =>
-          line &&
-          !line.startsWith("data:") &&
-          /(verify|validation|required)/i.test(line),
-      );
-    if (fallback) {
-      message = fallback;
-    }
-  }
-
-  const bestVerifyUrl = selectBestVerificationUrl([...verificationUrls]);
-  let verificationRequiredType:
-    | "gemini-cli"
-    | "api-enable"
-    | "google-account"
-    | "unknown" = "unknown";
-
-  const lowerVerifyUrl = bestVerifyUrl?.toLowerCase() ?? "";
-  if (
-    lowerBody.includes("gemini") ||
-    lowerBody.includes("gemini-cli") ||
-    lowerVerifyUrl.includes("gemini")
-  ) {
-    verificationRequiredType = "gemini-cli";
-  } else if (
-    lowerBody.includes("api.enable") ||
-    lowerBody.includes("enable")
-  ) {
-    verificationRequiredType = "api-enable";
-  } else if (
-    lowerBody.includes("accounts.google.com/o/oauth2") ||
-    lowerVerifyUrl.includes("accounts.google.com/o/oauth2")
-  ) {
-    verificationRequiredType = "google-account";
-  }
-
-  return {
-    validationRequired,
-    message,
-    verifyUrl: bestVerifyUrl,
-    verificationRequiredType: validationRequired ? verificationRequiredType : undefined,
-  };
-}
-
-async function verifyAccountAccess(
-  account: {
-    refreshToken: string;
-    email?: string;
-    projectId?: string;
-    managedProjectId?: string;
-  },
-  client: PluginClient,
-  providerId: string,
-): Promise<VerificationProbeResult> {
-  const parsed = parseRefreshParts(account.refreshToken);
-  if (!parsed.refreshToken) {
-    return {
-      status: "error",
-      message: "Missing refresh token for selected account.",
-    };
-  }
-
-  const auth = {
-    type: "oauth" as const,
-    refresh: formatRefreshParts({
-      refreshToken: parsed.refreshToken,
-      projectId: parsed.projectId ?? account.projectId,
-      managedProjectId: parsed.managedProjectId ?? account.managedProjectId,
-    }),
-    access: "",
-    expires: 0,
-  };
-
-  let refreshedAuth: Awaited<ReturnType<typeof refreshAccessToken>>;
-  try {
-    refreshedAuth = await refreshAccessToken(auth, client, providerId);
-  } catch (error) {
-    if (error instanceof AntigravityTokenRefreshError) {
-      return { status: "error", message: error.message };
-    }
-    return {
-      status: "error",
-      message: `Token refresh failed: ${String(error)}`,
-    };
-  }
-
-  if (!refreshedAuth?.access) {
-    return {
-      status: "error",
-      message: "Could not refresh access token for this account.",
-    };
-  }
-
-  const projectId =
-    parsed.managedProjectId ??
-    parsed.projectId ??
-    account.managedProjectId ??
-    account.projectId;
-
-  const headers: Record<string, string> = {
-    ...getAntigravityHeaders(),
-    Authorization: `Bearer ${refreshedAuth.access}`,
-    "Content-Type": "application/json",
-  };
-  if (projectId) {
-    headers["x-goog-user-project"] = projectId;
-  }
-
-  const requestBody = {
-    model: "gemini-3-flash",
-    request: {
-      model: "gemini-3-flash",
-      contents: [{ role: "user", parts: [{ text: "ping" }] }],
-      generationConfig: { maxOutputTokens: 1, temperature: 0 },
-    },
-  };
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 20000);
-
-  let response: Response;
-  try {
-    response = await fetch(
-      `${ANTIGRAVITY_ENDPOINT_PROD}/v1internal:streamGenerateContent?alt=sse`,
-      {
-        method: "POST",
-        headers,
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
-      },
-    );
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      return { status: "error", message: "Verification check timed out." };
-    }
-    return {
-      status: "error",
-      message: `Verification check failed: ${String(error)}`,
-    };
-  } finally {
-    clearTimeout(timeoutId);
-  }
-
-  let responseBody = "";
-  try {
-    responseBody = await response.text();
-  } catch {
-    responseBody = "";
-  }
-
-  if (response.ok) {
-    return { status: "ok", message: "Account verification check passed." };
-  }
-
-  const extracted = extractVerificationErrorDetails(responseBody);
-  if (response.status === 403 && extracted.validationRequired) {
-    return {
-      status: "blocked",
-      message:
-        extracted.message ?? "Google requires additional account verification.",
-      verifyUrl: extracted.verifyUrl,
-      verificationRequiredType: extracted.verificationRequiredType,
-    };
-  }
-
-  const fallbackMessage =
-    extracted.message ??
-    `Request failed (${response.status} ${response.statusText}).`;
-  return {
-    status: "error",
-    message: fallbackMessage,
-  };
-}
-
-async function promptAccountIndexForVerification(
-  accounts: Array<{ email?: string; index: number }>,
-): Promise<number | undefined> {
-  const { createInterface } = await import("node:readline/promises");
-  const { stdin, stdout } = await import("node:process");
-  const rl = createInterface({ input: stdin, output: stdout });
-  try {
-    console.log("\nSelect an account to verify:");
-    for (const account of accounts) {
-      const label = account.email || `Account ${account.index + 1}`;
-      console.log(`  ${account.index + 1}. ${label}`);
-    }
-    console.log("");
-
-    while (true) {
-      const answer = (
-        await rl.question("Account number (leave blank to cancel): ")
-      ).trim();
-      if (!answer) {
-        return undefined;
-      }
-      const parsedIndex = Number(answer);
-      if (!Number.isInteger(parsedIndex)) {
-        console.log("Please enter a valid account number.");
-        continue;
-      }
-      const normalizedIndex = parsedIndex - 1;
-      const selected = accounts.find(
-        (account) => account.index === normalizedIndex,
-      );
-      if (!selected) {
-        console.log("Please enter a number from the list above.");
-        continue;
-      }
-      return selected.index;
-    }
-  } finally {
-    rl.close();
-  }
-}
-
-async function promptOpenVerificationUrl(): Promise<boolean> {
-  const answer = (
-    await promptOAuthCallbackValue(
-      "Open verification URL in your browser now? [Y/n]: ",
-    )
-  )
-    .trim()
-    .toLowerCase();
-  return answer === "" || answer === "y" || answer === "yes";
-}
-
-type VerificationStoredAccount = {
-  enabled?: boolean;
-  verificationRequired?: boolean;
-  verificationRequiredAt?: number;
-  verificationRequiredReason?: string;
-  verificationRequiredType?:
-    | "gemini-cli"
-    | "api-enable"
-    | "google-account"
-    | "unknown";
-  verificationUrl?: string;
-};
-
-function markStoredAccountVerificationRequired(
-  account: VerificationStoredAccount,
-  reason: string,
-  verifyUrl?: string,
-  verificationRequiredType?:
-    | "gemini-cli"
-    | "api-enable"
-    | "google-account"
-    | "unknown",
-): boolean {
-  let changed = false;
-  const wasVerificationRequired = account.verificationRequired === true;
-
-  if (!wasVerificationRequired) {
-    account.verificationRequired = true;
-    changed = true;
-  }
-
-  if (
-    !wasVerificationRequired ||
-    account.verificationRequiredAt === undefined
-  ) {
-    account.verificationRequiredAt = Date.now();
-    changed = true;
-  }
-
-  const normalizedReason = reason.trim();
-  if (account.verificationRequiredReason !== normalizedReason) {
-    account.verificationRequiredReason = normalizedReason;
-    changed = true;
-  }
-
-  const normalizedUrl = verifyUrl?.trim();
-  if (normalizedUrl && account.verificationUrl !== normalizedUrl) {
-    account.verificationUrl = normalizedUrl;
-    changed = true;
-  }
-
-  if (account.verificationRequiredType !== verificationRequiredType) {
-    account.verificationRequiredType = verificationRequiredType;
-    changed = true;
-  }
-
-  if (account.enabled !== false) {
-    account.enabled = false;
-    changed = true;
-  }
-  return changed;
-}
-
-function clearStoredAccountVerificationRequired(
-  account: VerificationStoredAccount,
-  enableIfRequired = false,
-): { changed: boolean; wasVerificationRequired: boolean } {
-  const wasVerificationRequired = account.verificationRequired === true;
-  let changed = false;
-
-  if (account.verificationRequired !== false) {
-    account.verificationRequired = false;
-    changed = true;
-  }
-  if (account.verificationRequiredAt !== undefined) {
-    account.verificationRequiredAt = undefined;
-    changed = true;
-  }
-  if (account.verificationRequiredReason !== undefined) {
-    account.verificationRequiredReason = undefined;
-    changed = true;
-  }
-  if (account.verificationUrl !== undefined) {
-    account.verificationUrl = undefined;
-    changed = true;
-  }
-
-  if (
-    enableIfRequired &&
-    wasVerificationRequired &&
-    account.enabled === false
-  ) {
-    account.enabled = true;
-    changed = true;
-  }
-
-  return { changed, wasVerificationRequired };
-}
-
-async function promptOAuthCallbackValue(message: string): Promise<string> {
-  const { createInterface } = await import("node:readline/promises");
-  const { stdin, stdout } = await import("node:process");
-  const rl = createInterface({ input: stdin, output: stdout });
-  try {
-    return (await rl.question(message)).trim();
-  } finally {
-    rl.close();
-  }
-}
-
-type OAuthCallbackParams = { code: string; state: string };
-
-function getStateFromAuthorizationUrl(authorizationUrl: string): string {
-  try {
-    return new URL(authorizationUrl).searchParams.get("state") ?? "";
-  } catch {
-    return "";
-  }
-}
-
-function getOAuthListenerRedirectUri(isGeminiCli: boolean): string | undefined {
-  return isGeminiCli ? GEMINI_CLI_REDIRECT_URI : undefined;
-}
-
-function extractOAuthCallbackParams(url: URL): OAuthCallbackParams | null {
-  const code = url.searchParams.get("code");
-  const state = url.searchParams.get("state");
-  if (!code || !state) {
-    return null;
-  }
-  return { code, state };
-}
-
-function parseOAuthCallbackInput(
-  value: string,
-  fallbackState: string,
-): OAuthCallbackParams | { error: string } {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return { error: "Missing authorization code" };
-  }
-
-  try {
-    const url = new URL(trimmed);
-    const code = url.searchParams.get("code");
-    const state = url.searchParams.get("state") ?? fallbackState;
-
-    if (!code) {
-      return { error: "Missing code in callback URL" };
-    }
-    if (!state) {
-      return { error: "Missing state in callback URL" };
-    }
-
-    return { code, state };
-  } catch {
-    if (!fallbackState) {
-      return {
-        error:
-          "Missing state. Paste the full redirect URL instead of only the code.",
-      };
-    }
-
-    return { code: trimmed, state: fallbackState };
-  }
-}
-
-async function promptManualOAuthInput(
-  fallbackState: string,
-  isGeminiCli: boolean = false,
-): Promise<AntigravityTokenExchangeResult> {
-  console.log(
-    "1. Open the URL above in your browser and complete Google sign-in.",
-  );
-  console.log(
-    "2. After approving, copy the full redirected localhost URL from the address bar.",
-  );
-  console.log("3. Paste it back here.\n");
-
-  const callbackInput = await promptOAuthCallbackValue(
-    "Paste the redirect URL (or just the code) here: ",
-  );
-  const params = parseOAuthCallbackInput(callbackInput, fallbackState);
-  if ("error" in params) {
-    return { type: "failed", error: params.error };
-  }
-
-  return isGeminiCli
-    ? exchangeGeminiCli(params.code, params.state)
-    : exchangeAntigravity(params.code, params.state);
-}
 
 function clampInt(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) {
@@ -1981,12 +1349,12 @@ export const createAntigravityPlugin =
                       `all-over-soft-quota family=${family} accounts=${accountCount} waitMs=${softQuotaWaitMs}`,
                     );
 
-                    if (!softQuotaToastShown) {
+                    if (!getSoftQuotaToastShown()) {
                       await showToast(
                         `All ${accountCount} account(s) over ${threshold}% quota. Waiting ${formatWaitTime(softQuotaWaitMs)}...`,
                         "warning",
                       );
-                      softQuotaToastShown = true;
+                      setSoftQuotaToastShown(true);
                     }
 
                     await sleep(softQuotaWaitMs, abortSignal);
@@ -2038,12 +1406,12 @@ export const createAntigravityPlugin =
                     );
                   }
 
-                  if (!rateLimitToastShown) {
+                  if (!getRateLimitToastShown()) {
                     await showToast(
                       `All ${accountCount} account(s) rate-limited for ${family}. Waiting ${waitSecValue}s...`,
                       "warning",
                     );
-                    rateLimitToastShown = true;
+                    setRateLimitToastShown(true);
                   }
 
                   // Wait for the rate-limit cooldown to expire, then retry
