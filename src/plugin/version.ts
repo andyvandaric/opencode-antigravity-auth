@@ -51,6 +51,19 @@ async function tryFetchVersion(url: string, maxChars?: number): Promise<string |
 export async function initAntigravityVersion(): Promise<void> {
   const log = createLogger("version");
   const fallback = getAntigravityVersion();
-  setAntigravityVersion(fallback);
-  log.info("version-fetch-disabled-forced-to-fallback", { fallback });
+  let version = await tryFetchVersion(VERSION_URL);
+  let source: VersionSource = "api";
+
+  if (!version) {
+    version = await tryFetchVersion(CHANGELOG_URL, CHANGELOG_SCAN_CHARS);
+    source = "changelog";
+  }
+
+  if (!version) {
+    version = fallback;
+    source = "fallback";
+  }
+
+  setAntigravityVersion(version);
+  log.info("antigravity-version-initialized", { version, source, fallback });
 }
