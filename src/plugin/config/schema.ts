@@ -475,7 +475,7 @@ export const DEFAULT_CONFIG: AntigravityConfig = {
   debug_tui: false,
   keep_thinking: false,
   session_recovery: true,
-  auto_resume: true,
+  auto_resume: false,
   resume_text: "continue",
   empty_response_max_attempts: 4,
   empty_response_retry_delay_ms: 2000,
