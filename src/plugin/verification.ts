@@ -369,6 +369,7 @@ export function clearStoredAccountVerificationRequired(
   if (account.verificationRequired !== false) { account.verificationRequired = false; changed = true; }
   if (account.verificationRequiredAt !== undefined) { account.verificationRequiredAt = undefined; changed = true; }
   if (account.verificationRequiredReason !== undefined) { account.verificationRequiredReason = undefined; changed = true; }
+  if (account.verificationRequiredType !== undefined) { account.verificationRequiredType = undefined; changed = true; }
   if (account.verificationUrl !== undefined) { account.verificationUrl = undefined; changed = true; }
 
   if (enableIfRequired && wasVerificationRequired && account.enabled === false) {
