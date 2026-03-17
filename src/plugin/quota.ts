@@ -27,8 +27,17 @@ export interface QuotaGroupSummary {
   modelCount: number;
 }
 
+export interface QuotaModelSummary {
+  modelId: string;
+  displayName?: string;
+  remainingFraction?: number;
+  resetTime?: string;
+  group: QuotaGroup;
+}
+
 export interface QuotaSummary {
   groups: Partial<Record<QuotaGroup, QuotaGroupSummary>>;
+  models: QuotaModelSummary[];
   modelCount: number;
   error?: string;
 }
@@ -127,8 +136,9 @@ function classifyQuotaGroup(modelName: string, displayName?: string): QuotaGroup
 
 function aggregateQuota(models?: Record<string, FetchAvailableModelEntry>): QuotaSummary {
   const groups: Partial<Record<QuotaGroup, QuotaGroupSummary>> = {};
+  const modelSummaries: QuotaModelSummary[] = [];
   if (!models) {
-    return { groups, modelCount: 0 };
+    return { groups, models: modelSummaries, modelCount: 0 };
   }
 
   let totalCount = 0;
@@ -145,6 +155,13 @@ function aggregateQuota(models?: Record<string, FetchAvailableModelEntry>): Quot
     const resetTimestamp = parseResetTime(resetTime);
 
     totalCount += 1;
+    modelSummaries.push({
+      modelId: entry.modelName ?? modelName,
+      displayName: entry.displayName,
+      remainingFraction,
+      resetTime,
+      group,
+    });
 
     const existing = groups[group];
     const nextCount = (existing?.modelCount ?? 0) + 1;
@@ -174,7 +191,14 @@ function aggregateQuota(models?: Record<string, FetchAvailableModelEntry>): Quot
     };
   }
 
-  return { groups, modelCount: totalCount };
+  modelSummaries.sort((a, b) => {
+    if (a.group !== b.group) {
+      return a.group.localeCompare(b.group);
+    }
+    return a.modelId.localeCompare(b.modelId);
+  });
+
+  return { groups, models: modelSummaries, modelCount: totalCount };
 }
 
 
@@ -265,12 +289,12 @@ function aggregateGeminiCliQuota(response: RetrieveUserQuotaResponse): GeminiCli
       continue;
     }
     
-    // Filter out models we don't care about for Gemini CLI quotas
-    // Only show gemini-3-* and gemini-2.5-pro models (the premium ones)
-    const modelId = bucket.modelId;
-    const isRelevantModel = 
-      modelId.startsWith("gemini-3-") || 
-      modelId === "gemini-2.5-pro";
+    const modelId = bucket.modelId.toLowerCase();
+    const isRelevantModel =
+      modelId === "gemini-2.5-pro" ||
+      modelId === "gemini-2.5-flash" ||
+      modelId.startsWith("gemini-3-flash") ||
+      modelId.startsWith("gemini-3.1-pro");
     
     if (!isRelevantModel) {
       continue;
@@ -351,6 +375,7 @@ export async function checkAccountsQuota(
       if (antigravityResponse.models === undefined) {
         quotaResult = {
           groups: {},
+          models: [],
           modelCount: 0,
           error: "Failed to fetch Antigravity quota",
         };

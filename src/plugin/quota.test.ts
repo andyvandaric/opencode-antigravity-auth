@@ -4,6 +4,7 @@ import { __testExports } from "./quota";
 
 const {
   aggregateQuota,
+  aggregateGeminiCliQuota,
   fetchAvailableModels,
   fetchGeminiCliQuota,
   resolveQuotaProjectId,
@@ -125,5 +126,63 @@ describe("quota aggregation", () => {
     });
 
     expect(summary.groups["gemini-pro"]?.remainingFraction).toBe(0.8);
+  });
+
+  it("preserves individual antigravity model entries for display", () => {
+    const summary = aggregateQuota({
+      "gemini-3-flash": {
+        modelName: "gemini-3-flash",
+        displayName: "Gemini 3 Flash",
+        quotaInfo: {
+          remainingFraction: 0.25,
+          resetTime: "2026-01-01T00:00:00Z",
+        },
+      },
+      "claude-sonnet-4-6": {
+        modelName: "claude-sonnet-4-6",
+        displayName: "Claude Sonnet 4.6",
+        quotaInfo: {
+          remainingFraction: 0.9,
+        },
+      },
+    });
+
+    expect(summary.models).toEqual([
+      {
+        modelId: "claude-sonnet-4-6",
+        displayName: "Claude Sonnet 4.6",
+        remainingFraction: 0.9,
+        resetTime: undefined,
+        group: "claude",
+      },
+      {
+        modelId: "gemini-3-flash",
+        displayName: "Gemini 3 Flash",
+        remainingFraction: 0.25,
+        resetTime: "2026-01-01T00:00:00Z",
+        group: "gemini-flash",
+      },
+    ]);
+  });
+});
+
+describe("gemini cli quota aggregation", () => {
+  it("keeps all supported Gemini CLI models", () => {
+    const summary = aggregateGeminiCliQuota({
+      buckets: [
+        { modelId: "gemini-2.5-flash", remainingFraction: 0.7 },
+        { modelId: "gemini-2.5-pro", remainingFraction: 0.6 },
+        { modelId: "gemini-3-flash-preview", remainingFraction: 0.5 },
+        { modelId: "gemini-3.1-pro-preview", remainingFraction: 0.4 },
+        { modelId: "gemini-1.5-pro", remainingFraction: 0.3 },
+      ],
+    });
+
+    expect(summary.models.map((model) => model.modelId)).toEqual([
+      "gemini-2.5-flash",
+      "gemini-2.5-pro",
+      "gemini-3-flash-preview",
+      "gemini-3.1-pro-preview",
+    ]);
   });
 });
