@@ -54,6 +54,12 @@ export interface GeminiCliQuotaSummary {
   error?: string;
 }
 
+export interface QuotaAvailability {
+  kind: "unknown" | "exhausted" | "available" | "exact";
+  status: "unknown" | "exhausted" | "available" | "low" | "limited";
+  remainingFraction?: number;
+}
+
 interface RetrieveUserQuotaResponse {
   buckets?: {
     remainingAmount?: string;
@@ -110,6 +116,41 @@ function normalizeRemainingFraction(value: unknown): number | undefined {
   if (value < 0) return 0;
   if (value > 1) return 1;
   return value;
+}
+
+export function interpretQuotaAvailability(
+  remainingFraction?: number,
+): QuotaAvailability {
+  if (typeof remainingFraction !== "number" || !Number.isFinite(remainingFraction)) {
+    return { kind: "unknown", status: "unknown" };
+  }
+
+  if (remainingFraction <= 0) {
+    return {
+      kind: "exhausted",
+      status: "exhausted",
+      remainingFraction: 0,
+    };
+  }
+
+  if (remainingFraction >= 1) {
+    return {
+      kind: "available",
+      status: "available",
+      remainingFraction: 1,
+    };
+  }
+
+  return {
+    kind: "exact",
+    status:
+      remainingFraction < 0.2
+        ? "low"
+        : remainingFraction < 0.6
+          ? "limited"
+          : "available",
+    remainingFraction,
+  };
 }
 
 function parseResetTime(resetTime?: string): number | null {
@@ -425,6 +466,7 @@ export async function checkAccountsQuota(
 export const __testExports = {
   aggregateGeminiCliQuota,
   aggregateQuota,
+  interpretQuotaAvailability,
   resolveQuotaProjectId,
   fetchAvailableModels,
   fetchGeminiCliQuota,

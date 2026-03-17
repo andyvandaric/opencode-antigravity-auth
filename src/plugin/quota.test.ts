@@ -7,6 +7,7 @@ const {
   aggregateGeminiCliQuota,
   fetchAvailableModels,
   fetchGeminiCliQuota,
+  interpretQuotaAvailability,
   resolveQuotaProjectId,
 } = __testExports;
 
@@ -184,5 +185,31 @@ describe("gemini cli quota aggregation", () => {
       "gemini-3-flash-preview",
       "gemini-3.1-pro-preview",
     ]);
+  });
+});
+
+describe("quota availability interpretation", () => {
+  it("treats 1 as available instead of exact 100 percent", () => {
+    expect(interpretQuotaAvailability(1)).toEqual({
+      kind: "available",
+      status: "available",
+      remainingFraction: 1,
+    });
+  });
+
+  it("treats 0 as exhausted", () => {
+    expect(interpretQuotaAvailability(0)).toEqual({
+      kind: "exhausted",
+      status: "exhausted",
+      remainingFraction: 0,
+    });
+  });
+
+  it("preserves exact fractions only when they are between 0 and 1", () => {
+    expect(interpretQuotaAvailability(0.4)).toEqual({
+      kind: "exact",
+      status: "limited",
+      remainingFraction: 0.4,
+    });
   });
 });
