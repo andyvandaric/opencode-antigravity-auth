@@ -2503,6 +2503,16 @@ export const createAntigravityPlugin =
                           return colors.green;
                         };
 
+                        const getQuotaStatusLabel = (
+                          remaining?: number,
+                        ): string => {
+                          if (typeof remaining !== "number") return "unknown";
+                          if (remaining <= 0) return "exhausted";
+                          if (remaining < 0.2) return "low";
+                          if (remaining < 0.6) return "limited";
+                          return "available";
+                        };
+
                         // Helper to create colored progress bar
                         const createProgressBar = (
                           remaining?: number,
@@ -2557,17 +2567,20 @@ export const createAntigravityPlugin =
                             const bar = createProgressBar(
                               model.remainingFraction,
                             );
+                            const status = getQuotaStatusLabel(
+                              model.remainingFraction,
+                            );
                             const reset = formatReset(model.resetTime);
                             const modelName = model.modelId.padEnd(29);
                             console.log(
-                              `  │  ${connector} ${modelName} ${bar}${reset}`,
+                              `  │  ${connector} ${modelName} ${bar} ${status}${reset}`,
                             );
                           });
                         }
 
                         // Display Antigravity Quota second
                         const hasAntigravity =
-                          res.quota && Object.keys(res.quota.groups).length > 0;
+                          res.quota && res.quota.models.length > 0;
                         console.log(`  │`);
                         console.log(`  └─ Antigravity Quota`);
                         if (!hasAntigravity) {
@@ -2576,29 +2589,21 @@ export const createAntigravityPlugin =
                             "No quota information available";
                           console.log(`     └─ ${errorMsg}`);
                         } else {
-                          const groups = res.quota!.groups;
-                          const groupEntries = [
-                            { name: "Claude", data: groups.claude },
-                            {
-                              name: "Gemini 3.1 Pro",
-                              data: groups["gemini-pro"],
-                            },
-                            {
-                              name: "Gemini 3 Flash",
-                              data: groups["gemini-flash"],
-                            },
-                          ].filter((g) => g.data);
+                          const models = res.quota!.models;
 
-                          groupEntries.forEach((g, idx) => {
-                            const isLast = idx === groupEntries.length - 1;
+                          models.forEach((model, idx) => {
+                            const isLast = idx === models.length - 1;
                             const connector = isLast ? "└─" : "├─";
                             const bar = createProgressBar(
-                              g.data!.remainingFraction,
+                              model.remainingFraction,
                             );
-                            const reset = formatReset(g.data!.resetTime);
-                            const modelName = g.name.padEnd(29);
+                            const status = getQuotaStatusLabel(
+                              model.remainingFraction,
+                            );
+                            const reset = formatReset(model.resetTime);
+                            const modelName = model.modelId.padEnd(29);
                             console.log(
-                              `     ${connector} ${modelName} ${bar}${reset}`,
+                              `     ${connector} ${modelName} ${bar} ${status}${reset}`,
                             );
                           });
                         }
