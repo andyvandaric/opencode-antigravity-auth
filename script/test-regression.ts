@@ -57,7 +57,7 @@ const GEMINI_FLASH = "google/antigravity-gemini-3-flash";
 const GEMINI_FLASH_CLI_QUOTA = "google/gemini-2.5-flash";
 const CLAUDE_SONNET = "google/antigravity-claude-sonnet-4-6-thinking";
 const CLAUDE_SONNET_VARIANT: TurnConfig["variant"] = "low";
-const CLAUDE_OPUS = "google/antigravity-claude-opus-4-5-thinking";
+const CLAUDE_OPUS = "google/antigravity-claude-opus-4-6-thinking";
 const CLAUDE_OPUS_VARIANT: TurnConfig["variant"] = "low";
 
 function getDefaultVariantForModel(model: string): TurnConfig["variant"] | undefined {
@@ -65,7 +65,7 @@ function getDefaultVariantForModel(model: string): TurnConfig["variant"] | undef
   if (normalized.includes("claude-sonnet-4-6-thinking")) {
     return CLAUDE_SONNET_VARIANT;
   }
-  if (normalized.includes("claude-opus-4-5-thinking")) {
+  if (normalized.includes("claude-opus-4-6-thinking")) {
     return CLAUDE_OPUS_VARIANT;
   }
   return undefined;
@@ -497,7 +497,7 @@ async function runMultiTurnTest(test: MultiTurnTest): Promise<TestResult> {
       }
     }
 
-    if (result.code !== 0 && result.code !== null) {
+    if (result.code !== 0) {
       const isTimeout = Date.now() - turnStart >= test.timeout - 1000;
       if (isTimeout) {
         process.stdout.write("\r" + " ".repeat(50) + "\r");
@@ -509,6 +509,16 @@ async function runMultiTurnTest(test: MultiTurnTest): Promise<TestResult> {
           sessionId: sessionId ?? undefined,
         };
       }
+
+      process.stdout.write("\r" + " ".repeat(50) + "\r");
+      const errorOutput = (result.stderr || result.output || "Unknown error").slice(0, 500);
+      return {
+        success: false,
+        error: `Turn ${index + 1}: Command failed with exit code ${result.code}. ${errorOutput}`,
+        duration: Date.now() - start,
+        turnsCompleted,
+        sessionId: sessionId ?? undefined,
+      };
     }
 
     sessionId = result.sessionId;

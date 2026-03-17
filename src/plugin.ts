@@ -1,14 +1,19 @@
 import { exec } from "node:child_process";
 import { tool } from "@opencode-ai/plugin";
 import {
-  ANTIGRAVITY_DEFAULT_PROJECT_ID,
   ANTIGRAVITY_ENDPOINT_FALLBACKS,
   ANTIGRAVITY_ENDPOINT_PROD,
   ANTIGRAVITY_PROVIDER_ID,
+  GEMINI_CLI_REDIRECT_URI,
   getAntigravityHeaders,
   type HeaderStyle,
 } from "./constants";
-import { authorizeAntigravity, exchangeAntigravity } from "./antigravity/oauth";
+import {
+  authorizeAntigravity,
+  exchangeAntigravity,
+  authorizeGeminiCli,
+  exchangeGeminiCli,
+} from "./antigravity/oauth";
 import type { AntigravityTokenExchangeResult } from "./antigravity/oauth";
 import {
   accessTokenExpired,
@@ -18,6 +23,7 @@ import {
 } from "./plugin/auth";
 import {
   promptAddAnotherAccount,
+  type LoginMenuResult,
   promptLoginMode,
   promptProjectId,
   pause,
@@ -55,6 +61,7 @@ import { startOAuthListener, type OAuthListener } from "./plugin/server";
 import {
   clearAccounts,
   loadAccounts,
+  loadAccountsWithStatus,
   saveAccounts,
   saveAccountsReplace,
 } from "./plugin/storage";
@@ -73,9 +80,10 @@ import {
 } from "./plugin/config";
 import {
   createSessionRecoveryHook,
+  detectErrorType,
   getRecoverySuccessToast,
 } from "./plugin/recovery";
-import { checkAccountsQuota } from "./plugin/quota";
+import { checkAccountsQuota, interpretQuotaAvailability } from "./plugin/quota";
 import { initDiskSignatureCache } from "./plugin/cache";
 import {
   createProactiveRefreshQueue,
@@ -100,13 +108,73 @@ import type {
   Provider,
 } from "./plugin/types";
 import { configureProxy } from "./plugin/proxy";
+import { isWSL, isWSL2, isRemoteEnvironment } from "./plugin/environment";
+import {
+  shouldShowRateLimitToast,
+  resetAllAccountsBlockedToasts,
+  getSoftQuotaToastShown,
+  setSoftQuotaToastShown,
+  getRateLimitToastShown,
+  setRateLimitToastShown,
+} from "./plugin/toast-manager";
+import {
+  trackWarmupAttempt,
+  markWarmupSuccess,
+  clearWarmupAttempt,
+  MAX_WARMUP_RETRIES,
+} from "./plugin/warmup";
+import {
+  verifyAccountAccess,
+  extractVerificationErrorDetails,
+  markStoredAccountVerificationRequired,
+  clearStoredAccountVerificationRequired,
+  type VerificationProbeResult,
+  type VerificationStoredAccount,
+} from "./plugin/verification";
+import {
+  promptOAuthCallbackValue,
+  promptOpenVerificationUrl,
+  promptAccountIndexForVerification,
+  promptManualOAuthInput,
+  getStateFromAuthorizationUrl,
+  getOAuthListenerRedirectUri,
+  extractOAuthCallbackParams,
+  parseOAuthCallbackInput,
+} from "./plugin/oauth-flow";
+import {
+  parseDurationToMs,
+  extractRateLimitBodyInfo,
+  extractRetryInfoFromBody,
+  retryAfterMsFromResponse,
+  formatWaitTime,
+  getRateLimitBackoff,
+  resetRateLimitState,
+  resetAllRateLimitStateForAccount,
+  trackAccountFailure,
+  resetAccountFailureState,
+  cleanupStaleTrackingState,
+  FIRST_RETRY_DELAY_MS,
+  SWITCH_ACCOUNT_DELAY_MS,
+  type RateLimitBodyInfo,
+} from "./plugin/rate-limit-handler";
+import { openBrowser, shouldSkipLocalServer } from "./plugin/browser";
+import {
+  toUrlString,
+  toWarmupStreamUrl,
+  extractModelFromUrl,
+  getModelFamilyFromUrl,
+  resolveHeaderRoutingDecision,
+  getSoftQuotaThresholdForHeaderStyle,
+  getHeaderStyleFromUrl,
+  resolveQuotaFallbackHeaderStyle,
+  type HeaderRoutingDecision,
+} from "./plugin/request-url";
+import { resolveInitialRateLimitRouting } from "./plugin/retry-fallback-orchestrator";
 
 // Configure proxy if environment variables are set
 configureProxy();
 
 const MAX_OAUTH_ACCOUNTS = 10;
-const MAX_WARMUP_SESSIONS = 1000;
-const MAX_WARMUP_RETRIES = 2;
 const CAPACITY_BACKOFF_TIERS_MS = [5000, 10000, 20000, 30000, 60000];
 
 function getCapacityBackoffDelay(consecutiveFailures: number): number {
@@ -116,8 +184,6 @@ function getCapacityBackoffDelay(consecutiveFailures: number): number {
   );
   return CAPACITY_BACKOFF_TIERS_MS[Math.max(0, index)] ?? 5000;
 }
-const warmupAttemptedSessionIds = new Set<string>();
-const warmupSucceededSessionIds = new Set<string>();
 
 // Track if this plugin instance is running in a child session (subagent, background task)
 // Used to filter toasts based on toast_scope config
@@ -128,46 +194,8 @@ let currentOpenCodeSessionId: string | undefined = undefined;
 
 const log = createLogger("plugin");
 
-// Module-level toast debounce to persist across requests (fixes toast spam)
-const rateLimitToastCooldowns = new Map<string, number>();
-const RATE_LIMIT_TOAST_COOLDOWN_MS = 5000;
-const MAX_TOAST_COOLDOWN_ENTRIES = 100;
-
-// Track if "all accounts blocked" toasts were shown to prevent spam in while loop
-let softQuotaToastShown = false;
-let rateLimitToastShown = false;
-
 // Module-level reference to AccountManager for access from auth.login
-let activeAccountManager: import("./plugin/accounts").AccountManager | null =
-  null;
-
-function cleanupToastCooldowns(): void {
-  if (rateLimitToastCooldowns.size > MAX_TOAST_COOLDOWN_ENTRIES) {
-    const now = Date.now();
-    for (const [key, time] of rateLimitToastCooldowns) {
-      if (now - time > RATE_LIMIT_TOAST_COOLDOWN_MS * 2) {
-        rateLimitToastCooldowns.delete(key);
-      }
-    }
-  }
-}
-
-function shouldShowRateLimitToast(message: string): boolean {
-  cleanupToastCooldowns();
-  const toastKey = message.replace(/\d+/g, "X");
-  const lastShown = rateLimitToastCooldowns.get(toastKey) ?? 0;
-  const now = Date.now();
-  if (now - lastShown < RATE_LIMIT_TOAST_COOLDOWN_MS) {
-    return false;
-  }
-  rateLimitToastCooldowns.set(toastKey, now);
-  return true;
-}
-
-function resetAllAccountsBlockedToasts(): void {
-  softQuotaToastShown = false;
-  rateLimitToastShown = false;
-}
+let activeAccountManager: import("./plugin/accounts").AccountManager | null = null;
 
 const quotaRefreshInProgressByEmail = new Set<string>();
 
@@ -224,652 +252,18 @@ async function triggerAsyncQuotaRefreshForAccount(
   }
 }
 
-function trackWarmupAttempt(sessionId: string): boolean {
-  if (warmupSucceededSessionIds.has(sessionId)) {
-    return false;
-  }
-  if (warmupAttemptedSessionIds.size >= MAX_WARMUP_SESSIONS) {
-    const first = warmupAttemptedSessionIds.values().next().value;
-    if (first) {
-      warmupAttemptedSessionIds.delete(first);
-      warmupSucceededSessionIds.delete(first);
-    }
-  }
-  const attempts = getWarmupAttemptCount(sessionId);
-  if (attempts >= MAX_WARMUP_RETRIES) {
-    return false;
-  }
-  warmupAttemptedSessionIds.add(sessionId);
-  return true;
-}
+// trackWarmupAttempt, markWarmupSuccess, clearWarmupAttempt imported from ./plugin/warmup
 
-function getWarmupAttemptCount(sessionId: string): number {
-  return warmupAttemptedSessionIds.has(sessionId) ? 1 : 0;
-}
+// shouldSkipLocalServer and openBrowser imported from ./plugin/browser
+// isWSL, isWSL2, isRemoteEnvironment are imported from ./plugin/environment
 
-function markWarmupSuccess(sessionId: string): void {
-  warmupSucceededSessionIds.add(sessionId);
-  if (warmupSucceededSessionIds.size >= MAX_WARMUP_SESSIONS) {
-    const first = warmupSucceededSessionIds.values().next().value;
-    if (first) warmupSucceededSessionIds.delete(first);
-  }
-}
 
-function clearWarmupAttempt(sessionId: string): void {
-  warmupAttemptedSessionIds.delete(sessionId);
-}
+// verifyAccountAccess, extractVerificationErrorDetails, markStoredAccountVerificationRequired,
+// clearStoredAccountVerificationRequired, promptOAuthCallbackValue, promptOpenVerificationUrl,
+// promptAccountIndexForVerification, promptManualOAuthInput, getStateFromAuthorizationUrl,
+// getOAuthListenerRedirectUri, extractOAuthCallbackParams
+// — all imported from ./plugin/verification and ./plugin/oauth-flow
 
-function isWSL(): boolean {
-  if (process.platform !== "linux") return false;
-  try {
-    const { readFileSync } = require("node:fs");
-    const release = readFileSync("/proc/version", "utf8").toLowerCase();
-    return release.includes("microsoft") || release.includes("wsl");
-  } catch {
-    return false;
-  }
-}
-
-function isWSL2(): boolean {
-  if (!isWSL()) return false;
-  try {
-    const { readFileSync } = require("node:fs");
-    const version = readFileSync("/proc/version", "utf8").toLowerCase();
-    return version.includes("wsl2") || version.includes("microsoft-standard");
-  } catch {
-    return false;
-  }
-}
-
-function isRemoteEnvironment(): boolean {
-  if (
-    process.env.SSH_CLIENT ||
-    process.env.SSH_TTY ||
-    process.env.SSH_CONNECTION
-  ) {
-    return true;
-  }
-  if (process.env.REMOTE_CONTAINERS || process.env.CODESPACES) {
-    return true;
-  }
-  if (
-    process.platform === "linux" &&
-    !process.env.DISPLAY &&
-    !process.env.WAYLAND_DISPLAY &&
-    !isWSL()
-  ) {
-    return true;
-  }
-  return false;
-}
-
-function shouldSkipLocalServer(): boolean {
-  return isWSL2() || isRemoteEnvironment();
-}
-
-async function openBrowser(url: string): Promise<boolean> {
-  try {
-    if (process.platform === "darwin") {
-      exec(`open "${url}"`);
-      return true;
-    }
-    if (process.platform === "win32") {
-      exec(`start "" "${url}"`);
-      return true;
-    }
-    if (isWSL()) {
-      try {
-        exec(`wslview "${url}"`);
-        return true;
-      } catch {}
-    }
-    if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
-      return false;
-    }
-    exec(`xdg-open "${url}"`);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-type VerificationProbeResult = {
-  status: "ok" | "blocked" | "error";
-  message: string;
-  verifyUrl?: string;
-};
-
-function decodeEscapedText(input: string): string {
-  return input
-    .replace(/&amp;/g, "&")
-    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex: string) =>
-      String.fromCharCode(Number.parseInt(hex, 16)),
-    );
-}
-
-function normalizeGoogleVerificationUrl(rawUrl: string): string | undefined {
-  const normalized = decodeEscapedText(rawUrl).trim();
-  if (!normalized) {
-    return undefined;
-  }
-  try {
-    const parsed = new URL(normalized);
-    if (parsed.hostname !== "accounts.google.com") {
-      return undefined;
-    }
-    return parsed.toString();
-  } catch {
-    return undefined;
-  }
-}
-
-function selectBestVerificationUrl(urls: string[]): string | undefined {
-  const unique = Array.from(
-    new Set(
-      urls
-        .map((url) => normalizeGoogleVerificationUrl(url))
-        .filter(Boolean) as string[],
-    ),
-  );
-  if (unique.length === 0) {
-    return undefined;
-  }
-  unique.sort((a, b) => {
-    const score = (value: string): number => {
-      let total = 0;
-      if (value.includes("plt=")) total += 4;
-      if (value.includes("/signin/continue")) total += 3;
-      if (value.includes("continue=")) total += 2;
-      if (value.includes("service=cloudcode")) total += 1;
-      return total;
-    };
-    return score(b) - score(a);
-  });
-  return unique[0];
-}
-
-function extractVerificationErrorDetails(bodyText: string): {
-  validationRequired: boolean;
-  message?: string;
-  verifyUrl?: string;
-} {
-  const decodedBody = decodeEscapedText(bodyText);
-  const lowerBody = decodedBody.toLowerCase();
-  let validationRequired = lowerBody.includes("validation_required");
-  let message: string | undefined;
-  const verificationUrls = new Set<string>();
-
-  const collectUrlsFromText = (text: string): void => {
-    for (const match of text.matchAll(
-      /https:\/\/accounts\.google\.com\/[^\s"'<>]+/gi,
-    )) {
-      if (match[0]) {
-        verificationUrls.add(match[0]);
-      }
-    }
-  };
-
-  collectUrlsFromText(decodedBody);
-
-  const payloads: unknown[] = [];
-  const trimmed = decodedBody.trim();
-  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-    try {
-      payloads.push(JSON.parse(trimmed));
-    } catch {}
-  }
-
-  for (const rawLine of decodedBody.split("\n")) {
-    const line = rawLine.trim();
-    if (!line.startsWith("data:")) {
-      continue;
-    }
-    const payloadText = line.slice(5).trim();
-    if (!payloadText || payloadText === "[DONE]") {
-      continue;
-    }
-    try {
-      payloads.push(JSON.parse(payloadText));
-    } catch {
-      collectUrlsFromText(payloadText);
-    }
-  }
-
-  const visited = new Set<unknown>();
-  const walk = (value: unknown, key?: string): void => {
-    if (typeof value === "string") {
-      const normalizedValue = decodeEscapedText(value);
-      const lowerValue = normalizedValue.toLowerCase();
-      const lowerKey = key?.toLowerCase() ?? "";
-
-      if (lowerValue.includes("validation_required")) {
-        validationRequired = true;
-      }
-      if (
-        !message &&
-        (lowerKey.includes("message") ||
-          lowerKey.includes("detail") ||
-          lowerKey.includes("description"))
-      ) {
-        message = normalizedValue;
-      }
-      if (
-        lowerKey.includes("validation_url") ||
-        lowerKey.includes("verify_url") ||
-        lowerKey.includes("verification_url") ||
-        lowerKey === "url"
-      ) {
-        verificationUrls.add(normalizedValue);
-      }
-      collectUrlsFromText(normalizedValue);
-      return;
-    }
-
-    if (!value || typeof value !== "object" || visited.has(value)) {
-      return;
-    }
-
-    visited.add(value);
-
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        walk(item);
-      }
-      return;
-    }
-
-    for (const [childKey, childValue] of Object.entries(
-      value as Record<string, unknown>,
-    )) {
-      walk(childValue, childKey);
-    }
-  };
-
-  for (const payload of payloads) {
-    walk(payload);
-  }
-
-  if (!validationRequired) {
-    validationRequired =
-      lowerBody.includes("verification required") ||
-      lowerBody.includes("verify your account") ||
-      lowerBody.includes("account verification");
-  }
-
-  if (!message) {
-    const fallback = decodedBody
-      .split("\n")
-      .map((line) => line.trim())
-      .find(
-        (line) =>
-          line &&
-          !line.startsWith("data:") &&
-          /(verify|validation|required)/i.test(line),
-      );
-    if (fallback) {
-      message = fallback;
-    }
-  }
-
-  return {
-    validationRequired,
-    message,
-    verifyUrl: selectBestVerificationUrl([...verificationUrls]),
-  };
-}
-
-async function verifyAccountAccess(
-  account: {
-    refreshToken: string;
-    email?: string;
-    projectId?: string;
-    managedProjectId?: string;
-  },
-  client: PluginClient,
-  providerId: string,
-): Promise<VerificationProbeResult> {
-  const parsed = parseRefreshParts(account.refreshToken);
-  if (!parsed.refreshToken) {
-    return {
-      status: "error",
-      message: "Missing refresh token for selected account.",
-    };
-  }
-
-  const auth = {
-    type: "oauth" as const,
-    refresh: formatRefreshParts({
-      refreshToken: parsed.refreshToken,
-      projectId: parsed.projectId ?? account.projectId,
-      managedProjectId: parsed.managedProjectId ?? account.managedProjectId,
-    }),
-    access: "",
-    expires: 0,
-  };
-
-  let refreshedAuth: Awaited<ReturnType<typeof refreshAccessToken>>;
-  try {
-    refreshedAuth = await refreshAccessToken(auth, client, providerId);
-  } catch (error) {
-    if (error instanceof AntigravityTokenRefreshError) {
-      return { status: "error", message: error.message };
-    }
-    return {
-      status: "error",
-      message: `Token refresh failed: ${String(error)}`,
-    };
-  }
-
-  if (!refreshedAuth?.access) {
-    return {
-      status: "error",
-      message: "Could not refresh access token for this account.",
-    };
-  }
-
-  const projectId =
-    parsed.managedProjectId ??
-    parsed.projectId ??
-    account.managedProjectId ??
-    account.projectId ??
-    ANTIGRAVITY_DEFAULT_PROJECT_ID;
-
-  const headers: Record<string, string> = {
-    ...getAntigravityHeaders(),
-    Authorization: `Bearer ${refreshedAuth.access}`,
-    "Content-Type": "application/json",
-  };
-  if (projectId) {
-    headers["x-goog-user-project"] = projectId;
-  }
-
-  const requestBody = {
-    model: "gemini-3-flash",
-    request: {
-      model: "gemini-3-flash",
-      contents: [{ role: "user", parts: [{ text: "ping" }] }],
-      generationConfig: { maxOutputTokens: 1, temperature: 0 },
-    },
-  };
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 20000);
-
-  let response: Response;
-  try {
-    response = await fetch(
-      `${ANTIGRAVITY_ENDPOINT_PROD}/v1internal:streamGenerateContent?alt=sse`,
-      {
-        method: "POST",
-        headers,
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
-      },
-    );
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      return { status: "error", message: "Verification check timed out." };
-    }
-    return {
-      status: "error",
-      message: `Verification check failed: ${String(error)}`,
-    };
-  } finally {
-    clearTimeout(timeoutId);
-  }
-
-  let responseBody = "";
-  try {
-    responseBody = await response.text();
-  } catch {
-    responseBody = "";
-  }
-
-  if (response.ok) {
-    return { status: "ok", message: "Account verification check passed." };
-  }
-
-  const extracted = extractVerificationErrorDetails(responseBody);
-  if (response.status === 403 && extracted.validationRequired) {
-    return {
-      status: "blocked",
-      message:
-        extracted.message ?? "Google requires additional account verification.",
-      verifyUrl: extracted.verifyUrl,
-    };
-  }
-
-  const fallbackMessage =
-    extracted.message ??
-    `Request failed (${response.status} ${response.statusText}).`;
-  return {
-    status: "error",
-    message: fallbackMessage,
-  };
-}
-
-async function promptAccountIndexForVerification(
-  accounts: Array<{ email?: string; index: number }>,
-): Promise<number | undefined> {
-  const { createInterface } = await import("node:readline/promises");
-  const { stdin, stdout } = await import("node:process");
-  const rl = createInterface({ input: stdin, output: stdout });
-  try {
-    console.log("\nSelect an account to verify:");
-    for (const account of accounts) {
-      const label = account.email || `Account ${account.index + 1}`;
-      console.log(`  ${account.index + 1}. ${label}`);
-    }
-    console.log("");
-
-    while (true) {
-      const answer = (
-        await rl.question("Account number (leave blank to cancel): ")
-      ).trim();
-      if (!answer) {
-        return undefined;
-      }
-      const parsedIndex = Number(answer);
-      if (!Number.isInteger(parsedIndex)) {
-        console.log("Please enter a valid account number.");
-        continue;
-      }
-      const normalizedIndex = parsedIndex - 1;
-      const selected = accounts.find(
-        (account) => account.index === normalizedIndex,
-      );
-      if (!selected) {
-        console.log("Please enter a number from the list above.");
-        continue;
-      }
-      return selected.index;
-    }
-  } finally {
-    rl.close();
-  }
-}
-
-async function promptOpenVerificationUrl(): Promise<boolean> {
-  const answer = (
-    await promptOAuthCallbackValue(
-      "Open verification URL in your browser now? [Y/n]: ",
-    )
-  )
-    .trim()
-    .toLowerCase();
-  return answer === "" || answer === "y" || answer === "yes";
-}
-
-type VerificationStoredAccount = {
-  enabled?: boolean;
-  verificationRequired?: boolean;
-  verificationRequiredAt?: number;
-  verificationRequiredReason?: string;
-  verificationUrl?: string;
-};
-
-function markStoredAccountVerificationRequired(
-  account: VerificationStoredAccount,
-  reason: string,
-  verifyUrl?: string,
-): boolean {
-  let changed = false;
-  const wasVerificationRequired = account.verificationRequired === true;
-
-  if (!wasVerificationRequired) {
-    account.verificationRequired = true;
-    changed = true;
-  }
-
-  if (
-    !wasVerificationRequired ||
-    account.verificationRequiredAt === undefined
-  ) {
-    account.verificationRequiredAt = Date.now();
-    changed = true;
-  }
-
-  const normalizedReason = reason.trim();
-  if (account.verificationRequiredReason !== normalizedReason) {
-    account.verificationRequiredReason = normalizedReason;
-    changed = true;
-  }
-
-  const normalizedUrl = verifyUrl?.trim();
-  if (normalizedUrl && account.verificationUrl !== normalizedUrl) {
-    account.verificationUrl = normalizedUrl;
-    changed = true;
-  }
-
-  if (account.enabled !== false) {
-    account.enabled = false;
-    changed = true;
-  }
-
-  return changed;
-}
-
-function clearStoredAccountVerificationRequired(
-  account: VerificationStoredAccount,
-  enableIfRequired = false,
-): { changed: boolean; wasVerificationRequired: boolean } {
-  const wasVerificationRequired = account.verificationRequired === true;
-  let changed = false;
-
-  if (account.verificationRequired !== false) {
-    account.verificationRequired = false;
-    changed = true;
-  }
-  if (account.verificationRequiredAt !== undefined) {
-    account.verificationRequiredAt = undefined;
-    changed = true;
-  }
-  if (account.verificationRequiredReason !== undefined) {
-    account.verificationRequiredReason = undefined;
-    changed = true;
-  }
-  if (account.verificationUrl !== undefined) {
-    account.verificationUrl = undefined;
-    changed = true;
-  }
-
-  if (
-    enableIfRequired &&
-    wasVerificationRequired &&
-    account.enabled === false
-  ) {
-    account.enabled = true;
-    changed = true;
-  }
-
-  return { changed, wasVerificationRequired };
-}
-
-async function promptOAuthCallbackValue(message: string): Promise<string> {
-  const { createInterface } = await import("node:readline/promises");
-  const { stdin, stdout } = await import("node:process");
-  const rl = createInterface({ input: stdin, output: stdout });
-  try {
-    return (await rl.question(message)).trim();
-  } finally {
-    rl.close();
-  }
-}
-
-type OAuthCallbackParams = { code: string; state: string };
-
-function getStateFromAuthorizationUrl(authorizationUrl: string): string {
-  try {
-    return new URL(authorizationUrl).searchParams.get("state") ?? "";
-  } catch {
-    return "";
-  }
-}
-
-function extractOAuthCallbackParams(url: URL): OAuthCallbackParams | null {
-  const code = url.searchParams.get("code");
-  const state = url.searchParams.get("state");
-  if (!code || !state) {
-    return null;
-  }
-  return { code, state };
-}
-
-function parseOAuthCallbackInput(
-  value: string,
-  fallbackState: string,
-): OAuthCallbackParams | { error: string } {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return { error: "Missing authorization code" };
-  }
-
-  try {
-    const url = new URL(trimmed);
-    const code = url.searchParams.get("code");
-    const state = url.searchParams.get("state") ?? fallbackState;
-
-    if (!code) {
-      return { error: "Missing code in callback URL" };
-    }
-    if (!state) {
-      return { error: "Missing state in callback URL" };
-    }
-
-    return { code, state };
-  } catch {
-    if (!fallbackState) {
-      return {
-        error:
-          "Missing state. Paste the full redirect URL instead of only the code.",
-      };
-    }
-
-    return { code: trimmed, state: fallbackState };
-  }
-}
-
-async function promptManualOAuthInput(
-  fallbackState: string,
-): Promise<AntigravityTokenExchangeResult> {
-  console.log(
-    "1. Open the URL above in your browser and complete Google sign-in.",
-  );
-  console.log(
-    "2. After approving, copy the full redirected localhost URL from the address bar.",
-  );
-  console.log("3. Paste it back here.\n");
-
-  const callbackInput = await promptOAuthCallbackValue(
-    "Paste the redirect URL (or just the code) here: ",
-  );
-  const params = parseOAuthCallbackInput(callbackInput, fallbackState);
-  if ("error" in params) {
-    return { type: "failed", error: params.error };
-  }
-
-  return exchangeAntigravity(params.code, params.state);
-}
 
 function clampInt(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) {
@@ -890,7 +284,21 @@ async function persistAccountPool(
 
   // If replaceAll is true (fresh login), start with empty accounts
   // Otherwise, load existing accounts and merge
-  const stored = replaceAll ? null : await loadAccounts();
+  const storedResult = replaceAll
+    ? { status: "not_found" as const }
+    : await loadAccountsWithStatus();
+
+  if (!replaceAll && storedResult.status !== "ok" && storedResult.status !== "not_found") {
+    const detail =
+      storedResult.status === "invalid"
+        ? "Account storage is invalid or corrupted."
+        : "Account storage could not be read.";
+    throw new Error(
+      `${detail} Refusing to merge new OAuth accounts to avoid data loss. Fix ~/.config/opencode/antigravity-accounts.json and retry.`,
+    );
+  }
+
+  const stored = storedResult.status === "ok" ? storedResult.storage ?? null : null;
   const accounts = stored?.accounts ? [...stored.accounts] : [];
 
   const indexByRefreshToken = new Map<string, number>();
@@ -1009,310 +417,25 @@ function buildAuthSuccessFromStoredAccount(account: {
   };
 }
 
-function retryAfterMsFromResponse(
-  response: Response,
-  defaultRetryMs: number = 60_000,
-): number {
-  const retryAfterMsHeader = response.headers.get("retry-after-ms");
-  if (retryAfterMsHeader) {
-    const parsed = Number.parseInt(retryAfterMsHeader, 10);
-    if (!Number.isNaN(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-
-  const retryAfterHeader = response.headers.get("retry-after");
-  if (retryAfterHeader) {
-    const parsed = Number.parseInt(retryAfterHeader, 10);
-    if (!Number.isNaN(parsed) && parsed > 0) {
-      return parsed * 1000;
-    }
-  }
-
-  return defaultRetryMs;
-}
+// parseDurationToMs, extractRateLimitBodyInfo, extractRetryInfoFromBody, retryAfterMsFromResponse,
+// formatWaitTime, getRateLimitBackoff, resetRateLimitState, resetAllRateLimitStateForAccount,
+// trackAccountFailure, resetAccountFailureState, cleanupStaleTrackingState,
+// FIRST_RETRY_DELAY_MS, SWITCH_ACCOUNT_DELAY_MS — imported from ./plugin/rate-limit-handler
 
 /**
- * Parse Go-style duration strings to milliseconds.
- * Supports compound durations: "1h16m0.667s", "1.5s", "200ms", "5m30s"
- *
- * @param duration - Duration string in Go format
- * @returns Duration in milliseconds, or null if parsing fails
+ * Sleep for a given number of milliseconds, respecting an abort signal.
  */
-function parseDurationToMs(duration: string): number | null {
-  // Handle simple formats first for backwards compatibility
-  const simpleMatch = duration.match(/^(\d+(?:\.\d+)?)(ms|s|m|h)?$/i);
-  if (simpleMatch) {
-    const value = parseFloat(simpleMatch[1]!);
-    const unit = (simpleMatch[2] || "s").toLowerCase();
-    switch (unit) {
-      case "h":
-        return value * 3600 * 1000;
-      case "m":
-        return value * 60 * 1000;
-      case "s":
-        return value * 1000;
-      case "ms":
-        return value;
-      default:
-        return value * 1000;
+function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason instanceof Error ? signal.reason : new Error("Aborted"));
+      return;
     }
-  }
-
-  // Parse compound Go-style durations: "1h16m0.667s", "5m30s", etc.
-  const compoundRegex = /(\d+(?:\.\d+)?)(h|m(?!s)|s|ms)/gi;
-  let totalMs = 0;
-  let matchFound = false;
-  let match;
-
-  while ((match = compoundRegex.exec(duration)) !== null) {
-    matchFound = true;
-    const value = parseFloat(match[1]!);
-    const unit = match[2]!.toLowerCase();
-    switch (unit) {
-      case "h":
-        totalMs += value * 3600 * 1000;
-        break;
-      case "m":
-        totalMs += value * 60 * 1000;
-        break;
-      case "s":
-        totalMs += value * 1000;
-        break;
-      case "ms":
-        totalMs += value;
-        break;
-    }
-  }
-
-  return matchFound ? totalMs : null;
-}
-
-interface RateLimitBodyInfo {
-  retryDelayMs: number | null;
-  message?: string;
-  quotaResetTime?: string;
-  reason?: string;
-}
-
-function extractRateLimitBodyInfo(body: unknown): RateLimitBodyInfo {
-  if (!body || typeof body !== "object") {
-    return { retryDelayMs: null };
-  }
-
-  const error = (body as { error?: unknown }).error;
-  const message =
-    error && typeof error === "object"
-      ? (error as { message?: string }).message
-      : undefined;
-
-  const details =
-    error && typeof error === "object"
-      ? (error as { details?: unknown[] }).details
-      : undefined;
-
-  let reason: string | undefined;
-  if (Array.isArray(details)) {
-    for (const detail of details) {
-      if (!detail || typeof detail !== "object") continue;
-      const type = (detail as { "@type"?: string })["@type"];
-      if (typeof type === "string" && type.includes("google.rpc.ErrorInfo")) {
-        const detailReason = (detail as { reason?: string }).reason;
-        if (typeof detailReason === "string") {
-          reason = detailReason;
-          break;
-        }
-      }
-    }
-
-    for (const detail of details) {
-      if (!detail || typeof detail !== "object") continue;
-      const type = (detail as { "@type"?: string })["@type"];
-      if (typeof type === "string" && type.includes("google.rpc.RetryInfo")) {
-        const retryDelay = (detail as { retryDelay?: string }).retryDelay;
-        if (typeof retryDelay === "string") {
-          const retryDelayMs = parseDurationToMs(retryDelay);
-          if (retryDelayMs !== null) {
-            return { retryDelayMs, message, reason };
-          }
-        }
-      }
-    }
-
-    for (const detail of details) {
-      if (!detail || typeof detail !== "object") continue;
-      const metadata = (detail as { metadata?: Record<string, string> })
-        .metadata;
-      if (metadata && typeof metadata === "object") {
-        const quotaResetDelay = metadata.quotaResetDelay;
-        const quotaResetTime = metadata.quotaResetTimeStamp;
-        if (typeof quotaResetDelay === "string") {
-          const quotaResetDelayMs = parseDurationToMs(quotaResetDelay);
-          if (quotaResetDelayMs !== null) {
-            return {
-              retryDelayMs: quotaResetDelayMs,
-              message,
-              quotaResetTime,
-              reason,
-            };
-          }
-        }
-      }
-    }
-  }
-
-  if (message) {
-    const afterMatch = message.match(/reset after\s+([0-9hms.]+)/i);
-    const rawDuration = afterMatch?.[1];
-    if (rawDuration) {
-      const parsed = parseDurationToMs(rawDuration);
-      if (parsed !== null) {
-        return { retryDelayMs: parsed, message, reason };
-      }
-    }
-  }
-
-  return { retryDelayMs: null, message, reason };
-}
-
-async function extractRetryInfoFromBody(
-  response: Response,
-): Promise<RateLimitBodyInfo> {
-  try {
-    const text = await response.clone().text();
-    try {
-      const parsed = JSON.parse(text) as unknown;
-      return extractRateLimitBodyInfo(parsed);
-    } catch {
-      return { retryDelayMs: null };
-    }
-  } catch {
-    return { retryDelayMs: null };
-  }
-}
-
-function formatWaitTime(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = Math.ceil(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  if (minutes < 60) {
-    return remainingSeconds > 0
-      ? `${minutes}m ${remainingSeconds}s`
-      : `${minutes}m`;
-  }
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
-}
-
-// Progressive rate limit retry delays
-const FIRST_RETRY_DELAY_MS = 1000; // 1s - first 429 quick retry on same account
-const SWITCH_ACCOUNT_DELAY_MS = 5000; // 5s - delay before switching to another account
-
-/**
- * Rate limit state tracking with time-window deduplication.
- *
- * Problem: When multiple subagents hit 429 simultaneously, each would increment
- * the consecutive counter, causing incorrect exponential backoff (5 concurrent
- * 429s = 2^5 backoff instead of 2^1).
- *
- * Solution: Track per account+quota with deduplication window. Multiple 429s
- * within RATE_LIMIT_DEDUP_WINDOW_MS are treated as a single event.
- */
-const RATE_LIMIT_DEDUP_WINDOW_MS = 2000; // 2 seconds - concurrent requests within this window are deduplicated
-const RATE_LIMIT_STATE_RESET_MS = 120_000; // Reset consecutive counter after 2 minutes of no 429s
-
-interface RateLimitState {
-  consecutive429: number;
-  lastAt: number;
-  quotaKey: string; // Track which quota this state is for
-}
-
-// Key format: `${accountIndex}:${quotaKey}` for per-account-per-quota tracking
-const rateLimitStateByAccountQuota = new Map<string, RateLimitState>();
-
-// Track empty response retry attempts (ported from LLM-API-Key-Proxy)
-const emptyResponseAttempts = new Map<string, number>();
-
-/**
- * Get rate limit backoff with time-window deduplication.
- *
- * @param accountIndex - The account index
- * @param quotaKey - The quota key (e.g., "gemini-cli", "gemini-antigravity", "claude")
- * @param serverRetryAfterMs - Server-provided retry delay (if any)
- * @param maxBackoffMs - Maximum backoff delay in milliseconds (default 60000)
- * @returns { attempt, delayMs, isDuplicate } - isDuplicate=true if within dedup window
- */
-function getRateLimitBackoff(
-  accountIndex: number,
-  quotaKey: string,
-  serverRetryAfterMs: number | null,
-  maxBackoffMs: number = 60_000,
-): { attempt: number; delayMs: number; isDuplicate: boolean } {
-  const now = Date.now();
-  const stateKey = `${accountIndex}:${quotaKey}`;
-  const previous = rateLimitStateByAccountQuota.get(stateKey);
-
-  // Check if this is a duplicate 429 within the dedup window
-  if (previous && now - previous.lastAt < RATE_LIMIT_DEDUP_WINDOW_MS) {
-    // Same rate limit event from concurrent request - don't increment
-    const baseDelay = serverRetryAfterMs ?? 1000;
-    const backoffDelay = Math.min(
-      baseDelay * Math.pow(2, previous.consecutive429 - 1),
-      maxBackoffMs,
-    );
-    return {
-      attempt: previous.consecutive429,
-      delayMs: Math.max(baseDelay, backoffDelay),
-      isDuplicate: true,
-    };
-  }
-
-  // Check if we should reset (no 429 for 2 minutes) or increment
-  const attempt =
-    previous && now - previous.lastAt < RATE_LIMIT_STATE_RESET_MS
-      ? previous.consecutive429 + 1
-      : 1;
-
-  rateLimitStateByAccountQuota.set(stateKey, {
-    consecutive429: attempt,
-    lastAt: now,
-    quotaKey,
+    const timeout = setTimeout(() => { cleanup(); resolve(); }, ms);
+    const onAbort = () => { cleanup(); reject(signal?.reason instanceof Error ? signal.reason : new Error("Aborted")); };
+    const cleanup = () => { clearTimeout(timeout); signal?.removeEventListener("abort", onAbort); };
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
-
-  const baseDelay = serverRetryAfterMs ?? 1000;
-  const backoffDelay = Math.min(
-    baseDelay * Math.pow(2, attempt - 1),
-    maxBackoffMs,
-  );
-  return {
-    attempt,
-    delayMs: Math.max(baseDelay, backoffDelay),
-    isDuplicate: false,
-  };
-}
-
-/**
- * Reset rate limit state for an account+quota combination.
- * Only resets the specific quota, not all quotas for the account.
- */
-function resetRateLimitState(accountIndex: number, quotaKey: string): void {
-  const stateKey = `${accountIndex}:${quotaKey}`;
-  rateLimitStateByAccountQuota.delete(stateKey);
-}
-
-/**
- * Reset all rate limit state for an account (all quotas).
- * Used when account is completely healthy.
- */
-function resetAllRateLimitStateForAccount(accountIndex: number): void {
-  for (const key of rateLimitStateByAccountQuota.keys()) {
-    if (key.startsWith(`${accountIndex}:`)) {
-      rateLimitStateByAccountQuota.delete(key);
-    }
-  }
 }
 
 function headerStyleToQuotaKey(
@@ -1323,76 +446,22 @@ function headerStyleToQuotaKey(
   return headerStyle === "antigravity" ? "gemini-antigravity" : "gemini-cli";
 }
 
-// Track consecutive non-429 failures per account to prevent infinite loops
-const accountFailureState = new Map<
-  number,
-  { consecutiveFailures: number; lastFailureAt: number }
->();
-const MAX_CONSECUTIVE_FAILURES = 5;
-const FAILURE_COOLDOWN_MS = 30_000; // 30 seconds cooldown after max failures
-const FAILURE_STATE_RESET_MS = 120_000; // Reset failure count after 2 minutes of no failures
-
-function trackAccountFailure(accountIndex: number): {
-  failures: number;
-  shouldCooldown: boolean;
-  cooldownMs: number;
-} {
-  const now = Date.now();
-  const previous = accountFailureState.get(accountIndex);
-
-  // Reset if last failure was more than 2 minutes ago
-  const failures =
-    previous && now - previous.lastFailureAt < FAILURE_STATE_RESET_MS
-      ? previous.consecutiveFailures + 1
-      : 1;
-
-  accountFailureState.set(accountIndex, {
-    consecutiveFailures: failures,
-    lastFailureAt: now,
-  });
-
-  const shouldCooldown = failures >= MAX_CONSECUTIVE_FAILURES;
-  const cooldownMs = shouldCooldown ? FAILURE_COOLDOWN_MS : 0;
-
-  return { failures, shouldCooldown, cooldownMs };
+function shouldSendRecoveryResumePrompt(input: {
+  recovered: boolean;
+  sessionID?: string;
+  autoResume: boolean;
+  errorType: ReturnType<typeof detectErrorType>;
+}): boolean {
+  return (
+    input.recovered &&
+    !!input.sessionID &&
+    input.autoResume &&
+    input.errorType === "tool_result_missing"
+  );
 }
 
-function resetAccountFailureState(accountIndex: number): void {
-  accountFailureState.delete(accountIndex);
-}
-
-/**
- * Sleep for a given number of milliseconds, respecting an abort signal.
- */
-function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(
-        signal.reason instanceof Error ? signal.reason : new Error("Aborted"),
-      );
-      return;
-    }
-
-    const timeout = setTimeout(() => {
-      cleanup();
-      resolve();
-    }, ms);
-
-    const onAbort = () => {
-      cleanup();
-      reject(
-        signal?.reason instanceof Error ? signal.reason : new Error("Aborted"),
-      );
-    };
-
-    const cleanup = () => {
-      clearTimeout(timeout);
-      signal?.removeEventListener("abort", onAbort);
-    };
-
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
+// Track empty response retry attempts per request-id
+const emptyResponseAttempts = new Map<string, number>();
 
 /**
  * Creates an Antigravity OAuth plugin for a specific provider ID.
@@ -1498,8 +567,9 @@ export const createAntigravityPlugin =
         const sessionID = props?.sessionID as string | undefined;
         const messageID = props?.messageID as string | undefined;
         const error = props?.error;
+        const errorType = detectErrorType(error);
 
-        if (sessionRecovery.isRecoverableError(error)) {
+        if (errorType !== null) {
           const messageInfo = {
             id: messageID,
             role: "assistant" as const,
@@ -1511,17 +581,25 @@ export const createAntigravityPlugin =
           const recovered =
             await sessionRecovery.handleSessionRecovery(messageInfo);
 
-          // Only send "continue" AFTER successful tool_result_missing recovery
-          // (thinking recoveries already resume inside handleSessionRecovery)
-          if (recovered && sessionID && config.auto_resume) {
-            // For tool_result_missing, we need to send continue after injecting tool_results
-            await client.session
-              .prompt({
-                path: { id: sessionID },
-                body: { parts: [{ type: "text", text: config.resume_text }] },
-                query: { directory },
+          if (recovered) {
+            if (
+              shouldSendRecoveryResumePrompt({
+                recovered,
+                sessionID,
+                autoResume: config.auto_resume,
+                errorType,
               })
-              .catch(() => {});
+            ) {
+              const recoverySessionID = sessionID;
+              // For tool_result_missing, we need to send continue after injecting tool_results
+              await client.session
+                .prompt({
+                  path: { id: recoverySessionID! },
+                  body: { parts: [{ type: "text", text: config.resume_text }] },
+                  query: { directory },
+                })
+                .catch(() => {});
+            }
 
             // Show success toast (respects toast_scope for child sessions)
             const successToast = getRecoverySuccessToast();
@@ -1582,8 +660,6 @@ export const createAntigravityPlugin =
 
         // Get access token and project ID
         const parts = parseRefreshParts(auth.refresh);
-        const projectId =
-          parts.managedProjectId || parts.projectId || "unknown";
 
         // Ensure we have a valid access token
         let accessToken = auth.access;
@@ -1603,6 +679,13 @@ export const createAntigravityPlugin =
         if (!accessToken) {
           return "Error: No valid access token available. Please run `opencode auth login` to re-authenticate.";
         }
+
+        const projectContext = await ensureProjectContext(auth);
+        const projectId =
+          parts.managedProjectId ||
+          parts.projectId ||
+          projectContext.effectiveProjectId ||
+          "";
 
         return executeSearch(
           {
@@ -1813,6 +896,8 @@ export const createAntigravityPlugin =
                 // Check for abort at the start of each iteration
                 checkAborted();
 
+                // Evict stale tracking entries to prevent unbounded Map growth
+                cleanupStaleTrackingState();
                 const accountCount = accountManager.getAccountCount();
                 const routingDecision = resolveHeaderRoutingDecision(
                   urlString,
@@ -1836,6 +921,11 @@ export const createAntigravityPlugin =
                   config.soft_quota_cache_ttl_minutes,
                   config.quota_refresh_interval_minutes,
                 );
+                const preferredSoftQuotaThreshold =
+                  getSoftQuotaThresholdForHeaderStyle(
+                    config,
+                    preferredHeaderStyle,
+                  );
 
                 let account = accountManager.getCurrentOrNextForFamily(
                   family,
@@ -1843,7 +933,7 @@ export const createAntigravityPlugin =
                   config.account_selection_strategy,
                   preferredHeaderStyle,
                   config.pid_offset_enabled,
-                  config.soft_quota_threshold_percent,
+                  preferredSoftQuotaThreshold,
                   softQuotaCacheTtlMs,
                 );
 
@@ -1852,13 +942,18 @@ export const createAntigravityPlugin =
                     preferredHeaderStyle === "antigravity"
                       ? "gemini-cli"
                       : "antigravity";
+                  const alternateSoftQuotaThreshold =
+                    getSoftQuotaThresholdForHeaderStyle(
+                      config,
+                      alternateHeaderStyle,
+                    );
                   account = accountManager.getCurrentOrNextForFamily(
                     family,
                     model,
                     config.account_selection_strategy,
                     alternateHeaderStyle,
                     config.pid_offset_enabled,
-                    config.soft_quota_threshold_percent,
+                    alternateSoftQuotaThreshold,
                     softQuotaCacheTtlMs,
                   );
                   if (account) {
@@ -1872,12 +967,12 @@ export const createAntigravityPlugin =
                   if (
                     accountManager.areAllAccountsOverSoftQuota(
                       family,
-                      config.soft_quota_threshold_percent,
+                      preferredSoftQuotaThreshold,
                       softQuotaCacheTtlMs,
                       model,
                     )
                   ) {
-                    const threshold = config.soft_quota_threshold_percent;
+                    const threshold = preferredSoftQuotaThreshold;
                     const softQuotaWaitMs =
                       accountManager.getMinWaitTimeForSoftQuota(
                         family,
@@ -1914,12 +1009,12 @@ export const createAntigravityPlugin =
                       `all-over-soft-quota family=${family} accounts=${accountCount} waitMs=${softQuotaWaitMs}`,
                     );
 
-                    if (!softQuotaToastShown) {
+                    if (!getSoftQuotaToastShown()) {
                       await showToast(
                         `All ${accountCount} account(s) over ${threshold}% quota. Waiting ${formatWaitTime(softQuotaWaitMs)}...`,
                         "warning",
                       );
-                      softQuotaToastShown = true;
+                      setSoftQuotaToastShown(true);
                     }
 
                     await sleep(softQuotaWaitMs, abortSignal);
@@ -1971,12 +1066,12 @@ export const createAntigravityPlugin =
                     );
                   }
 
-                  if (!rateLimitToastShown) {
+                  if (!getRateLimitToastShown()) {
                     await showToast(
                       `All ${accountCount} account(s) rate-limited for ${family}. Waiting ${waitSecValue}s...`,
                       "warning",
                     );
-                    rateLimitToastShown = true;
+                    setRateLimitToastShown(true);
                   }
 
                   // Wait for the rate-limit cooldown to expire, then retry
@@ -2288,94 +1383,21 @@ export const createAntigravityPlugin =
                   );
                 }
 
-                // Check if this header style is rate-limited for this account
-                if (
-                  accountManager.isRateLimitedForHeaderStyle(
-                    account,
-                    family,
-                    headerStyle,
-                    model,
-                  )
-                ) {
-                  // Antigravity-first fallback: exhaust antigravity across ALL accounts before gemini-cli
-                  if (
-                    allowQuotaFallback &&
-                    family === "gemini" &&
-                    headerStyle === "antigravity"
-                  ) {
-                    // Check if ANY other account has antigravity available
-                    if (
-                      accountManager.hasOtherAccountWithAntigravityAvailable(
-                        account.index,
-                        family,
-                        model,
-                      )
-                    ) {
-                      // Switch to another account with antigravity (preserve antigravity priority)
-                      pushDebug(
-                        `antigravity rate-limited on account ${account.index}, but available on other accounts. Switching.`,
-                      );
-                      shouldSwitchAccount = true;
-                    } else {
-                      // All accounts exhausted antigravity - fall back to gemini-cli on this account
-                      const alternateStyle =
-                        accountManager.getAvailableHeaderStyle(
-                          account,
-                          family,
-                          model,
-                        );
-                      const fallbackStyle = resolveQuotaFallbackHeaderStyle({
-                        family,
-                        headerStyle,
-                        alternateStyle,
-                      });
-                      if (fallbackStyle) {
-                        await showToast(
-                          `Antigravity quota exhausted on all accounts. Using Gemini CLI quota.`,
-                          "warning",
-                        );
-                        headerStyle = fallbackStyle;
-                        pushDebug(
-                          `all-accounts antigravity exhausted, quota fallback: ${headerStyle}`,
-                        );
-                      } else {
-                        shouldSwitchAccount = true;
-                      }
-                    }
-                  } else if (allowQuotaFallback && family === "gemini") {
-                    // gemini-cli rate-limited - try alternate style (antigravity) on same account
-                    const alternateStyle =
-                      accountManager.getAvailableHeaderStyle(
-                        account,
-                        family,
-                        model,
-                      );
-                    const fallbackStyle = resolveQuotaFallbackHeaderStyle({
-                      family,
-                      headerStyle,
-                      alternateStyle,
-                    });
-                    if (fallbackStyle) {
-                      const quotaName =
-                        headerStyle === "gemini-cli"
-                          ? "Gemini CLI"
-                          : "Antigravity";
-                      const altQuotaName =
-                        fallbackStyle === "gemini-cli"
-                          ? "Gemini CLI"
-                          : "Antigravity";
-                      await showToast(
-                        `${quotaName} quota exhausted, using ${altQuotaName} quota`,
-                        "warning",
-                      );
-                      headerStyle = fallbackStyle;
-                      pushDebug(`quota fallback: ${headerStyle}`);
-                    } else {
-                      shouldSwitchAccount = true;
-                    }
-                  } else {
-                    shouldSwitchAccount = true;
-                  }
+                const initialRouting = resolveInitialRateLimitRouting({
+                  accountManager,
+                  account,
+                  family,
+                  model,
+                  headerStyle,
+                  allowQuotaFallback,
+                });
+                shouldSwitchAccount = initialRouting.shouldSwitchAccount;
+                headerStyle = initialRouting.headerStyle;
+                if (initialRouting.toastMessage) {
+                  await showToast(initialRouting.toastMessage, "warning");
+                }
+                if (initialRouting.debugMessage) {
+                  pushDebug(initialRouting.debugMessage);
                 }
 
                 while (!shouldSwitchAccount) {
@@ -2924,6 +1946,7 @@ export const createAntigravityPlugin =
                             account.index,
                             verificationReason,
                             extracted.verifyUrl,
+                            extracted.verificationRequiredType,
                           );
                           accountManager.markAccountCoolingDown(
                             account,
@@ -3300,10 +2323,11 @@ export const createAntigravityPlugin =
 
                 // Check for existing accounts and prompt user for login mode
                 let startFresh = true;
+                let isGeminiCli = false;
                 let refreshAccountIndex: number | undefined;
                 const existingStorage = await loadAccounts();
                 if (existingStorage && existingStorage.accounts.length > 0) {
-                  let menuResult;
+                  let menuResult: LoginMenuResult;
                   while (true) {
                     const now = Date.now();
                     const existingAccounts = existingStorage.accounts.map(
@@ -3479,22 +2503,33 @@ export const createAntigravityPlugin =
                           return colors.green;
                         };
 
-                        // Helper to create colored progress bar
-                        const createProgressBar = (
+                        const createQuotaIndicator = (
                           remaining?: number,
                           width: number = 20,
                         ): string => {
-                          if (typeof remaining !== "number")
-                            return "░".repeat(width) + " ???";
-                          const filled = Math.round(remaining * width);
+                          const availability =
+                            interpretQuotaAvailability(remaining);
+                          if (availability.kind === "unknown") {
+                            return "unknown";
+                          }
+                          if (availability.kind === "exhausted") {
+                            return `${colors.red}exhausted${colors.reset}`;
+                          }
+                          if (availability.kind === "available") {
+                            return `${colors.green}available${colors.reset}`;
+                          }
+
+                          const exactRemaining =
+                            availability.remainingFraction ?? remaining ?? 0;
+                          const filled = Math.round(exactRemaining * width);
                           const empty = width - filled;
-                          const color = getColor(remaining);
+                          const color = getColor(exactRemaining);
                           const bar = `${color}${"█".repeat(filled)}${colors.reset}${"░".repeat(empty)}`;
                           const pct =
-                            `${color}${Math.round(remaining * 100)}%${colors.reset}`.padStart(
+                            `${color}${Math.round(exactRemaining * 100)}%${colors.reset}`.padStart(
                               4 + color.length + colors.reset.length,
                             );
-                          return `${bar} ${pct}`;
+                          return `${bar} ${pct} ${availability.status}`;
                         };
 
                         // Helper to format reset time with days support
@@ -3530,20 +2565,20 @@ export const createAntigravityPlugin =
                           models.forEach((model, idx) => {
                             const isLast = idx === models.length - 1;
                             const connector = isLast ? "└─" : "├─";
-                            const bar = createProgressBar(
+                            const indicator = createQuotaIndicator(
                               model.remainingFraction,
                             );
                             const reset = formatReset(model.resetTime);
                             const modelName = model.modelId.padEnd(29);
                             console.log(
-                              `  │  ${connector} ${modelName} ${bar}${reset}`,
+                              `  │  ${connector} ${modelName} ${indicator}${reset}`,
                             );
                           });
                         }
 
                         // Display Antigravity Quota second
                         const hasAntigravity =
-                          res.quota && Object.keys(res.quota.groups).length > 0;
+                          res.quota && res.quota.models.length > 0;
                         console.log(`  │`);
                         console.log(`  └─ Antigravity Quota`);
                         if (!hasAntigravity) {
@@ -3552,29 +2587,18 @@ export const createAntigravityPlugin =
                             "No quota information available";
                           console.log(`     └─ ${errorMsg}`);
                         } else {
-                          const groups = res.quota!.groups;
-                          const groupEntries = [
-                            { name: "Claude", data: groups.claude },
-                            {
-                              name: "Gemini 3.1 Pro",
-                              data: groups["gemini-pro"],
-                            },
-                            {
-                              name: "Gemini 3 Flash",
-                              data: groups["gemini-flash"],
-                            },
-                          ].filter((g) => g.data);
+                          const models = res.quota!.models;
 
-                          groupEntries.forEach((g, idx) => {
-                            const isLast = idx === groupEntries.length - 1;
+                          models.forEach((model, idx) => {
+                            const isLast = idx === models.length - 1;
                             const connector = isLast ? "└─" : "├─";
-                            const bar = createProgressBar(
-                              g.data!.remainingFraction,
+                            const indicator = createQuotaIndicator(
+                              model.remainingFraction,
                             );
-                            const reset = formatReset(g.data!.resetTime);
-                            const modelName = g.name.padEnd(29);
+                            const reset = formatReset(model.resetTime);
+                            const modelName = model.modelId.padEnd(29);
                             console.log(
-                              `     ${connector} ${modelName} ${bar}${reset}`,
+                              `     ${connector} ${modelName} ${indicator}${reset}`,
                             );
                           });
                         }
@@ -3772,6 +2796,7 @@ export const createAntigravityPlugin =
                                 account,
                                 verification.message,
                                 verification.verifyUrl,
+                                verification.verificationRequiredType,
                               );
                             if (changed) {
                               storageUpdated = true;
@@ -3780,6 +2805,7 @@ export const createAntigravityPlugin =
                               i,
                               verification.message,
                               verification.verifyUrl,
+                              verification.verificationRequiredType,
                             );
 
                             blockedCount += 1;
@@ -3887,6 +2913,7 @@ export const createAntigravityPlugin =
                           account,
                           verification.message,
                           verification.verifyUrl,
+                          verification.verificationRequiredType,
                         );
                         if (changed) {
                           await saveAccounts(existingStorage);
@@ -3895,6 +2922,7 @@ export const createAntigravityPlugin =
                           verifyAccountIndex,
                           verification.message,
                           verification.verifyUrl,
+                          verification.verificationRequiredType,
                         );
 
                         const verifyUrl =
@@ -4059,9 +3087,9 @@ export const createAntigravityPlugin =
                       );
                     }
                   } else {
-                    startFresh = menuResult.mode === "fresh";
+                    startFresh = menuResult.mode === "fresh" || menuResult.mode === "gemini-cli-login";
+                    isGeminiCli = menuResult.mode === "gemini-cli-login";
                   }
-
                   if (startFresh && !menuResult.deleteAll) {
                     console.log(
                       "\nStarting fresh - existing accounts will be replaced.\n",
@@ -4073,15 +3101,16 @@ export const createAntigravityPlugin =
 
                 while (accounts.length < MAX_OAUTH_ACCOUNTS) {
                   console.log(
-                    `\n=== Antigravity OAuth (Account ${accounts.length + 1}) ===`,
+                    `\n=== ${isGeminiCli ? "Gemini CLI Login" : "Antigravity OAuth"} (Account ${accounts.length + 1}) ===`,
                   );
 
-                  const projectId = await promptProjectId();
+                  const projectId = isGeminiCli ? "" : await promptProjectId();
 
                   const result =
                     await (async (): Promise<AntigravityTokenExchangeResult> => {
-                      const authorization =
-                        await authorizeAntigravity(projectId);
+                      const authorization = isGeminiCli
+                        ? await authorizeGeminiCli()
+                        : await authorizeAntigravity(projectId);
                       const fallbackState = getStateFromAuthorizationUrl(
                         authorization.url,
                       );
@@ -4098,13 +3127,17 @@ export const createAntigravityPlugin =
                             "Please open the URL above manually in your local browser.\n",
                           );
                         }
-                        return promptManualOAuthInput(fallbackState);
+                        return promptManualOAuthInput(fallbackState, isGeminiCli);
                       }
 
                       let listener: OAuthListener | null = null;
                       if (!isHeadless) {
                         try {
-                          listener = await startOAuthListener();
+                          listener = await startOAuthListener({
+                            redirectUri: getOAuthListenerRedirectUri(
+                              isGeminiCli,
+                            ),
+                          });
                         } catch {
                           listener = null;
                         }
@@ -4152,7 +3185,7 @@ export const createAntigravityPlugin =
                                 await listener.close();
                               } catch {}
 
-                              return promptManualOAuthInput(fallbackState);
+                              return promptManualOAuthInput(fallbackState, isGeminiCli);
                             }
                             throw err;
                           }
@@ -4166,7 +3199,9 @@ export const createAntigravityPlugin =
                             };
                           }
 
-                          return exchangeAntigravity(params.code, params.state);
+                          return isGeminiCli
+                            ? exchangeGeminiCli(params.code, params.state)
+                            : exchangeAntigravity(params.code, params.state);
                         } catch (error) {
                           if (
                             error instanceof Error &&
@@ -4191,7 +3226,7 @@ export const createAntigravityPlugin =
                         }
                       }
 
-                      return promptManualOAuthInput(fallbackState);
+                      return promptManualOAuthInput(fallbackState, isGeminiCli);
                     })();
 
                   if (result.type === "failed") {
@@ -4219,7 +3254,22 @@ export const createAntigravityPlugin =
                         variant: "success",
                       },
                     });
-                  } catch {}
+                  } catch (error) {
+                    const message =
+                      error instanceof Error ? error.message : String(error);
+                    console.warn(
+                      `[opencode-ag-auth] Failed to persist authenticated account: ${message}`,
+                    );
+                    try {
+                      await client.tui.showToast({
+                        body: {
+                          message: `Failed to save account: ${message}`,
+                          variant: "error",
+                        },
+                      });
+                    } catch {}
+                    throw error;
+                  }
 
                   try {
                     if (refreshAccountIndex !== undefined) {
@@ -4410,7 +3460,16 @@ export const createAntigravityPlugin =
                         if (result.type === "success") {
                           try {
                             await persistAccountPool([result], false);
-                          } catch {}
+                          } catch (error) {
+                            const message =
+                              error instanceof Error
+                                ? error.message
+                                : String(error);
+                            return {
+                              type: "failed",
+                              error: `Authenticated but failed to persist account: ${message}`,
+                            };
+                          }
 
                           const newTotal = existingCount + 1;
                           const toastMessage =
@@ -4470,8 +3529,13 @@ export const createAntigravityPlugin =
                     try {
                       // TUI flow adds to existing accounts (non-destructive)
                       await persistAccountPool([result], false);
-                    } catch {
-                      // ignore
+                    } catch (error) {
+                      const message =
+                        error instanceof Error ? error.message : String(error);
+                      return {
+                        type: "failed",
+                        error: `Authenticated but failed to persist account: ${message}`,
+                      };
                     }
 
                     // Show appropriate toast message
@@ -4512,132 +3576,16 @@ export const AntigravityCLIOAuthPlugin = createAntigravityPlugin(
 );
 export const GoogleOAuthPlugin = AntigravityCLIOAuthPlugin;
 
-function toUrlString(value: RequestInfo): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  const candidate = (value as Request).url;
-  if (candidate) {
-    return candidate;
-  }
-  return value.toString();
-}
-
-function toWarmupStreamUrl(value: RequestInfo): string {
-  const urlString = toUrlString(value);
-  try {
-    const url = new URL(urlString);
-    if (!url.pathname.includes(":streamGenerateContent")) {
-      url.pathname = url.pathname.replace(
-        ":generateContent",
-        ":streamGenerateContent",
-      );
-    }
-    url.searchParams.set("alt", "sse");
-    return url.toString();
-  } catch {
-    return urlString;
-  }
-}
-
-function extractModelFromUrl(urlString: string): string | null {
-  const match = urlString.match(/\/models\/([^:\/?]+)(?::\w+)?/);
-  return match?.[1] ?? null;
-}
-
-function extractModelFromUrlWithSuffix(urlString: string): string | null {
-  const match = urlString.match(/\/models\/([^:\/\?]+)/);
-  return match?.[1] ?? null;
-}
-
-function getModelFamilyFromUrl(urlString: string): ModelFamily {
-  const model = extractModelFromUrl(urlString);
-  let family: ModelFamily = "gemini";
-  if (model && model.includes("claude")) {
-    family = "claude";
-  }
-  if (isDebugEnabled()) {
-    logModelFamily(urlString, model, family);
-  }
-  return family;
-}
-
-function resolveQuotaFallbackHeaderStyle(input: {
-  family: ModelFamily;
-  headerStyle: HeaderStyle;
-  alternateStyle: HeaderStyle | null;
-}): HeaderStyle | null {
-  if (input.family !== "gemini") {
-    return null;
-  }
-  if (!input.alternateStyle || input.alternateStyle === input.headerStyle) {
-    return null;
-  }
-  return input.alternateStyle;
-}
-
-type HeaderRoutingDecision = {
-  cliFirst: boolean;
-  preferredHeaderStyle: HeaderStyle;
-  explicitQuota: boolean;
-  allowQuotaFallback: boolean;
-};
-
-function resolveHeaderRoutingDecision(
-  urlString: string,
-  family: ModelFamily,
-  config: AntigravityConfig,
-): HeaderRoutingDecision {
-  const cliFirst = getCliFirst(config);
-  const preferredHeaderStyle = getHeaderStyleFromUrl(
-    urlString,
-    family,
-    cliFirst,
-  );
-  const explicitQuota = isExplicitQuotaFromUrl(urlString);
-  return {
-    cliFirst,
-    preferredHeaderStyle,
-    explicitQuota,
-    allowQuotaFallback: family === "gemini",
-  };
-}
-
-function getCliFirst(config: AntigravityConfig): boolean {
-  return (
-    (config as AntigravityConfig & { cli_first?: boolean }).cli_first ?? false
-  );
-}
-
-function getHeaderStyleFromUrl(
-  urlString: string,
-  family: ModelFamily,
-  cliFirst: boolean = false,
-): HeaderStyle {
-  if (family === "claude") {
-    return "antigravity";
-  }
-  const modelWithSuffix = extractModelFromUrlWithSuffix(urlString);
-  if (!modelWithSuffix) {
-    return cliFirst ? "gemini-cli" : "antigravity";
-  }
-  const { quotaPreference } = resolveModelWithTier(modelWithSuffix, {
-    cli_first: cliFirst,
-  });
-  return quotaPreference ?? "antigravity";
-}
-
-function isExplicitQuotaFromUrl(urlString: string): boolean {
-  const modelWithSuffix = extractModelFromUrlWithSuffix(urlString);
-  if (!modelWithSuffix) {
-    return false;
-  }
-  const { explicitQuota } = resolveModelWithTier(modelWithSuffix);
-  return explicitQuota ?? false;
-}
+// toUrlString, toWarmupStreamUrl, extractModelFromUrl, getModelFamilyFromUrl,
+// isGenerativeLanguageRequest, resolveHeaderRoutingDecision,
+// getSoftQuotaThresholdForHeaderStyle, getHeaderStyleFromUrl,
+// resolveQuotaFallbackHeaderStyle — imported from ./plugin/request-url
 
 export const __testExports = {
   getHeaderStyleFromUrl,
+  getOAuthListenerRedirectUri,
+  getSoftQuotaThresholdForHeaderStyle,
   resolveHeaderRoutingDecision,
   resolveQuotaFallbackHeaderStyle,
+  shouldSendRecoveryResumePrompt,
 };

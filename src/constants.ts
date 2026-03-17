@@ -64,13 +64,32 @@ export const ANTIGRAVITY_ENDPOINT = ANTIGRAVITY_ENDPOINT_DAILY;
  * Same as opencode-gemini-auth's GEMINI_CODE_ASSIST_ENDPOINT.
  */
 export const GEMINI_CLI_ENDPOINT = ANTIGRAVITY_ENDPOINT_PROD;
+/**
+ * Client ID for the Gemini CLI OAuth application.
+ */
+export const GEMINI_CLI_CLIENT_ID = "681255809395-uo3ioeahlrs9oiph0qk6n1j1n1uqquvg.apps.googleusercontent.com";
+
+/**
+ * Client secret for the Gemini CLI OAuth application.
+ */
+export const GEMINI_CLI_CLIENT_SECRET = "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";
+export const GEMINI_CLI_REDIRECT_URI = "http://localhost:9004";
+
+/**
+ * Scopes required for Gemini CLI OAuth.
+ */
+export const GEMINI_CLI_SCOPES: readonly string[] = [
+  "https://www.googleapis.com/auth/cloud-platform",
+  "https://www.googleapis.com/auth/generative-language.retriever",
+];
+
 
 /**
  * Hardcoded project id used when Antigravity does not return one (e.g., business/workspace accounts).
  */
 export const ANTIGRAVITY_DEFAULT_PROJECT_ID = "rising-fact-p41fc";
 
-const ANTIGRAVITY_VERSION_FALLBACK = "1.18.3";
+const ANTIGRAVITY_VERSION_FALLBACK = "1.20.5";
 let antigravityVersion = ANTIGRAVITY_VERSION_FALLBACK;
 let versionLocked = false;
 
@@ -89,11 +108,34 @@ export function setAntigravityVersion(version: string): void {
 /** @deprecated Use getAntigravityVersion() for runtime access. */
 export const ANTIGRAVITY_VERSION = ANTIGRAVITY_VERSION_FALLBACK;
 
+type AntigravityPlatform = typeof ANTIGRAVITY_PLATFORMS[number];
+
+function getRuntimeAntigravityPlatform(): AntigravityPlatform {
+  if (process.platform === "win32") {
+    return "windows/amd64";
+  }
+
+  return process.arch === "x64" ? "darwin/amd64" : "darwin/arm64";
+}
+
+function getAntigravityMetadataPlatform(platform: AntigravityPlatform): "WINDOWS" | "MACOS" {
+  return platform.startsWith("windows") ? "WINDOWS" : "MACOS";
+}
+
+export function buildAntigravityUserAgent(platform: AntigravityPlatform): string {
+  if (platform === "windows/amd64") {
+    return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Antigravity/${getAntigravityVersion()} Chrome/138.0.7204.235 Electron/37.3.1 Safari/537.36`;
+  }
+
+  return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Antigravity/${getAntigravityVersion()} Chrome/138.0.7204.235 Electron/37.3.1 Safari/537.36`;
+}
+
 export function getAntigravityHeaders(): HeaderSet & { "Client-Metadata": string } {
+  const platform = getRuntimeAntigravityPlatform();
   return {
-    "User-Agent": `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Antigravity/${getAntigravityVersion()} Chrome/138.0.7204.235 Electron/37.3.1 Safari/537.36`,
+    "User-Agent": buildAntigravityUserAgent(platform),
     "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
-    "Client-Metadata": `{"ideType":"ANTIGRAVITY","platform":"${process.platform === "win32" ? "WINDOWS" : "MACOS"}","pluginType":"GEMINI"}`,
+    "Client-Metadata": `{"ideType":"ANTIGRAVITY","platform":"${getAntigravityMetadataPlatform(platform)}","pluginType":"GEMINI"}`,
   };
 }
 
@@ -104,9 +146,11 @@ export const ANTIGRAVITY_HEADERS = {
   "Client-Metadata": `{"ideType":"ANTIGRAVITY","platform":"${process.platform === "win32" ? "WINDOWS" : "MACOS"}","pluginType":"GEMINI"}`,
 } as const;
 
+const GEMINI_CLI_NODE_VERSION = process.versions.node || "22.17.0";
+
 export const GEMINI_CLI_HEADERS = {
   "User-Agent": "google-api-nodejs-client/9.15.1",
-  "X-Goog-Api-Client": "gl-node/22.17.0",
+  "X-Goog-Api-Client": `gl-node/${GEMINI_CLI_NODE_VERSION}`,
   "Client-Metadata": "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
 } as const;
 
@@ -137,11 +181,10 @@ export function getRandomizedHeaders(style: HeaderStyle, model?: string): Header
     };
   }
   const platform = randomFrom(ANTIGRAVITY_PLATFORMS);
-  const metadataPlatform = platform.startsWith("windows") ? "WINDOWS" : "MACOS";
   return {
-    "User-Agent": `antigravity/${getAntigravityVersion()} ${platform}`,
+    "User-Agent": buildAntigravityUserAgent(platform),
     "X-Goog-Api-Client": randomFrom(ANTIGRAVITY_API_CLIENTS),
-    "Client-Metadata": `{"ideType":"ANTIGRAVITY","platform":"${metadataPlatform}","pluginType":"GEMINI"}`,
+    "Client-Metadata": `{"ideType":"ANTIGRAVITY","platform":"${getAntigravityMetadataPlatform(platform)}","pluginType":"GEMINI"}`,
   };
 }
 

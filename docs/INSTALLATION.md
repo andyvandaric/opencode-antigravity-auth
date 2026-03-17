@@ -36,8 +36,8 @@ If you want to contribute to the plugin or use a local version:
 
 2.  **Install dependencies and build:**
     ```bash
-    pnpm install
-    pnpm run build
+    bun install
+    bun run build
     ```
 
 3.  **Link to OpenCode:**

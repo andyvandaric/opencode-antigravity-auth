@@ -163,6 +163,14 @@ opencode run "Hello" --model=google/antigravity-claude-sonnet-4-6-thinking --var
 
 For details on variant configuration and thinking levels, see [docs/MODEL-VARIANTS.md](docs/MODEL-VARIANTS.md).
 
+### Image Generation
+
+Image generation models are not supported through this plugin's Antigravity proxy path (`cloudcode-pa.googleapis.com/v1internal:*`).
+
+If you use image model IDs such as `gemini-3.1-flash-image-preview` (or prefixed aliases), the backend returns `404 Requested entity was not found`.
+
+Use this plugin with text/code models only. For image generation, call the direct Gemini API outside this proxy flow.
+
 <details>
 <summary><b>Full models configuration (copy-paste ready)</b></summary>
 
@@ -234,12 +242,13 @@ Add this to your `~/.config/opencode/opencode.json`:
           "limit": { "context": 1048576, "output": 65536 },
           "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
         },
-        "gemini-3.1-pro-preview": {
-          "name": "Gemini 3.1 Pro Preview (Gemini CLI)",
-          "limit": { "context": 1048576, "output": 65535 },
-          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
+                 "gemini-3.1-pro-preview": {
+           "name": "Gemini 3.1 Pro Preview (Gemini CLI)",
+           "limit": { "context": 1048576, "output": 65535 },
+           "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
+         },
         }
-      }
+       }
     }
   }
 }
@@ -620,11 +629,14 @@ Most users don't need to configure anything — defaults work well.
 
 | Option | Default | What it does |
 |--------|---------|--------------|
-| `soft_quota_threshold_percent` | `90` | Skip account when quota usage exceeds this percentage. Prevents Google from penalizing accounts that fully exhaust quota. Set to `100` to disable. |
+| `soft_quota_threshold_percent` | `70` | Skip account when quota usage exceeds this percentage. Prevents Google from penalizing accounts that fully exhaust quota. Set to `100` to disable. |
+| `allow_ai_credit_overages` | `false` | For Antigravity requests only, stop preemptively skipping accounts once model quota is depleted and let Antigravity charge AI credits instead. Only enable after turning on AI Credit Overages in Antigravity. |
 | `quota_refresh_interval_minutes` | `15` | Background quota refresh interval. After successful API requests, refreshes quota cache if older than this interval. Set to `0` to disable. |
 | `soft_quota_cache_ttl_minutes` | `"auto"` | How long quota cache is considered fresh. `"auto"` = max(2 × refresh interval, 10 minutes). Set a number (1-120) for fixed TTL. |
 
 > **How it works**: Quota cache is refreshed automatically after API requests (when older than `quota_refresh_interval_minutes`) and manually via "Check quotas" in `opencode auth login`. The threshold check uses `soft_quota_cache_ttl_minutes` to determine cache freshness - if cache is older, the account is considered "unknown" and allowed (fail-open). When ALL accounts exceed the threshold, the plugin waits for the earliest quota reset time (like rate limit behavior). If wait time exceeds `max_rate_limit_wait_seconds`, it errors immediately.
+>
+> **AI Credit Overages**: `allow_ai_credit_overages` only disables the plugin's Antigravity soft-quota avoidance. It does not enable billing for you. You still need to turn on AI Credit Overages in Antigravity, and mixed account pools may still see 429s on accounts without overages enabled.
 
 ### Rate Limit Scheduling
 

@@ -110,3 +110,67 @@ export interface ProjectContextResult {
   effectiveProjectId: string;
 }
 
+export type UnknownRecord = Record<string, unknown>
+
+export interface RequestContentWithParts extends UnknownRecord {
+  role?: unknown;
+  parts: unknown[];
+}
+
+export interface RequestMessageWithContent extends UnknownRecord {
+  role?: unknown;
+  content: unknown[];
+}
+
+export function isRecord(value: unknown): value is UnknownRecord {
+  return typeof value === "object" && value !== null;
+}
+
+export function isContentWithParts(value: unknown): value is RequestContentWithParts {
+  return isRecord(value) && Array.isArray(value.parts);
+}
+
+export function isMessageWithContent(value: unknown): value is RequestMessageWithContent {
+  return isRecord(value) && Array.isArray(value.content);
+}
+
+export function isGeminiToolUseBoundaryPart(part: unknown): part is UnknownRecord {
+  if (!isRecord(part)) {
+    return false;
+  }
+
+  return "functionCall" in part || "tool_use" in part || "toolUse" in part;
+}
+
+export function isGeminiThinkingBoundaryPart(part: unknown): part is UnknownRecord {
+  if (!isRecord(part)) {
+    return false;
+  }
+
+  return part.thought === true || part.type === "thinking" || part.type === "reasoning";
+}
+
+export function isThinkingMessageBlock(part: unknown): part is UnknownRecord {
+  if (!isRecord(part)) {
+    return false;
+  }
+
+  return part.type === "thinking" || part.type === "redacted_thinking";
+}
+
+export function hasBoundarySignature(part: unknown, minLength = 1): boolean {
+  if (!isRecord(part)) {
+    return false;
+  }
+
+  if (part.thought === true) {
+    return typeof part.thoughtSignature === "string" && part.thoughtSignature.length >= minLength;
+  }
+
+  if (part.type === "thinking" || part.type === "reasoning" || part.type === "redacted_thinking") {
+    return typeof part.signature === "string" && part.signature.length >= minLength;
+  }
+
+  return false;
+}
+

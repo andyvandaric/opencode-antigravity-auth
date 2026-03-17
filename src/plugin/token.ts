@@ -1,11 +1,13 @@
 import { ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET } from "../constants";
 import { formatRefreshParts, parseRefreshParts, calculateTokenExpiry } from "./auth";
 import { clearCachedAuth, storeCachedAuth } from "./cache";
+import { fetchWithTimeout } from "./http";
 import { createLogger } from "./logger";
 import { invalidateProjectContextCache } from "./project";
 import type { OAuthAuthDetails, PluginClient, RefreshParts } from "./types";
 
 const log = createLogger("token");
+const TOKEN_REFRESH_TIMEOUT_MS = 20_000;
 
 interface OAuthErrorPayload {
   error?:
@@ -94,7 +96,7 @@ export async function refreshAccessToken(
 
   try {
     const startTime = Date.now();
-    const response = await fetch("https://oauth2.googleapis.com/token", {
+    const response = await fetchWithTimeout("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -105,7 +107,7 @@ export async function refreshAccessToken(
         client_id: ANTIGRAVITY_CLIENT_ID,
         client_secret: ANTIGRAVITY_CLIENT_SECRET,
       }),
-    });
+    }, TOKEN_REFRESH_TIMEOUT_MS);
 
     if (!response.ok) {
       let errorText: string | undefined;

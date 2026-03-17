@@ -1,13 +1,21 @@
 #!/usr/bin/env npx tsx
 import { spawn } from "child_process";
+import { resolve } from "path";
+import { pathToFileURL } from "url";
 
-interface ModelTest {
+export type ModelCategory =
+  | "gemini-cli"
+  | "antigravity-gemini"
+  | "antigravity-claude"
+  | "custom";
+
+export interface ModelTest {
   model: string;
-  category: "gemini-cli" | "antigravity-gemini" | "antigravity-claude";
-  variant?: "low" | "medium" | "high" | "max";
+  category: ModelCategory;
+  variant?: "minimal" | "low" | "medium" | "high" | "max";
 }
 
-const MODELS: ModelTest[] = [
+export const MODELS: ModelTest[] = [
   // Gemini CLI (direct Google API)
   { model: "google/gemini-3-flash-preview", category: "gemini-cli" },
   { model: "google/gemini-3.1-pro-preview", category: "gemini-cli" },
@@ -15,21 +23,16 @@ const MODELS: ModelTest[] = [
   { model: "google/gemini-2.5-flash", category: "gemini-cli" },
 
   // Antigravity Gemini
-  { model: "google/antigravity-gemini-3.1-pro-low", category: "antigravity-gemini" },
-  { model: "google/antigravity-gemini-3.1-pro-high", category: "antigravity-gemini" },
-  { model: "google/antigravity-gemini-3-flash", category: "antigravity-gemini" },
+  { model: "google/antigravity-gemini-3.1-pro", category: "antigravity-gemini", variant: "low" },
+  { model: "google/antigravity-gemini-3.1-pro", category: "antigravity-gemini", variant: "high" },
+  { model: "google/antigravity-gemini-3-flash", category: "antigravity-gemini", variant: "medium" },
 
   // Antigravity Claude
   { model: "google/antigravity-claude-sonnet-4-6", category: "antigravity-claude" },
   { model: "google/antigravity-claude-sonnet-4-6-thinking", category: "antigravity-claude", variant: "low" },
-  { model: "google/antigravity-claude-sonnet-4-6-thinking", category: "antigravity-claude", variant: "medium" },
-  { model: "google/antigravity-claude-sonnet-4-6-thinking", category: "antigravity-claude", variant: "high" },
-  { model: "google/antigravity-claude-opus-4-5-thinking", category: "antigravity-claude", variant: "low" },
-  { model: "google/antigravity-claude-opus-4-5-thinking", category: "antigravity-claude", variant: "medium" },
-  { model: "google/antigravity-claude-opus-4-5-thinking", category: "antigravity-claude", variant: "high" },
+  { model: "google/antigravity-claude-sonnet-4-6-thinking", category: "antigravity-claude", variant: "max" },
   { model: "google/antigravity-claude-opus-4-6-thinking", category: "antigravity-claude", variant: "low" },
-  { model: "google/antigravity-claude-opus-4-6-thinking", category: "antigravity-claude", variant: "medium" },
-  { model: "google/antigravity-claude-opus-4-6-thinking", category: "antigravity-claude", variant: "high" },
+  { model: "google/antigravity-claude-opus-4-6-thinking", category: "antigravity-claude", variant: "max" },
 ];
 
 const TEST_PROMPT = "Reply with exactly one word: WORKING";
@@ -84,19 +87,44 @@ async function testModel(model: string, timeoutMs: number, variant?: ModelTest["
   });
 }
 
-function parseArgs(): { filterModel: string | null; filterCategory: string | null; dryRun: boolean; help: boolean; timeout: number } {
-  const args = process.argv.slice(2);
+export interface ScriptArgs {
+  filterModel: string | null;
+  filterCategory: ModelCategory | null;
+  dryRun: boolean;
+  help: boolean;
+  timeout: number;
+}
+
+export function parseArgs(args: string[] = process.argv.slice(2)): ScriptArgs {
   const modelIdx = args.indexOf("--model");
   const catIdx = args.indexOf("--category");
   const timeoutIdx = args.indexOf("--timeout");
 
   return {
     filterModel: modelIdx !== -1 ? args[modelIdx + 1] ?? null : null,
-    filterCategory: catIdx !== -1 ? args[catIdx + 1] ?? null : null,
+    filterCategory: catIdx !== -1 ? (args[catIdx + 1] as ModelCategory | undefined) ?? null : null,
     dryRun: args.includes("--dry-run"),
     help: args.includes("--help") || args.includes("-h"),
     timeout: timeoutIdx !== -1 ? parseInt(args[timeoutIdx + 1] || "120000", 10) : DEFAULT_TIMEOUT_MS,
   };
+}
+
+export function selectModelTests(models: ModelTest[], args: Pick<ScriptArgs, "filterModel" | "filterCategory">): ModelTest[] {
+  let tests = models;
+
+  if (args.filterModel) {
+    const modelFilter = args.filterModel;
+    const configuredMatches = tests.filter((t) => t.model === modelFilter || t.model.endsWith(modelFilter));
+    tests = configuredMatches.length > 0
+      ? configuredMatches
+      : [{ model: modelFilter, category: "custom" }];
+  }
+
+  if (args.filterCategory) {
+    tests = tests.filter((t) => t.category === args.filterCategory);
+  }
+
+  return tests;
 }
 
 function printHelp(): void {
@@ -108,7 +136,7 @@ Usage:
 
 Options:
   --model <model>      Test specific model
-  --category <cat>     Test by category (gemini-cli, antigravity-gemini, antigravity-claude)
+  --category <cat>     Test by category (gemini-cli, antigravity-gemini, antigravity-claude, custom)
   --timeout <ms>       Timeout per model (default: 120000)
   --dry-run            List models without testing
   --help, -h           Show this help
@@ -128,9 +156,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  let tests = MODELS;
-  if (filterModel) tests = tests.filter((t) => t.model === filterModel || t.model.endsWith(filterModel));
-  if (filterCategory) tests = tests.filter((t) => t.category === filterCategory);
+  const tests = selectModelTests(MODELS, { filterModel, filterCategory });
 
   if (tests.length === 0) {
     console.log("No models match the filter.");
@@ -180,4 +206,15 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(console.error);
+function isMainModule(argv: string[] = process.argv, moduleUrl: string = import.meta.url): boolean {
+  const entrypoint = argv[1];
+  if (!entrypoint) {
+    return false;
+  }
+
+  return pathToFileURL(resolve(entrypoint)).href === moduleUrl;
+}
+
+if (isMainModule()) {
+  main().catch(console.error);
+}

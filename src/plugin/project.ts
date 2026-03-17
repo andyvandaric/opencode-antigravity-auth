@@ -2,13 +2,15 @@ import {
   getAntigravityHeaders,
   ANTIGRAVITY_ENDPOINT_FALLBACKS,
   ANTIGRAVITY_LOAD_ENDPOINTS,
-  ANTIGRAVITY_DEFAULT_PROJECT_ID,
 } from "../constants";
 import { formatRefreshParts, parseRefreshParts } from "./auth";
+import { fetchWithTimeout } from "./http";
 import { createLogger } from "./logger";
 import type { OAuthAuthDetails, ProjectContextResult } from "./types";
 
 const log = createLogger("project");
+const LOAD_PROJECT_TIMEOUT_MS = 12_000;
+const ONBOARD_PROJECT_TIMEOUT_MS = 20_000;
 
 const projectContextResultCache = new Map<string, ProjectContextResult>();
 const projectContextPendingCache = new Map<string, Promise<ProjectContextResult>>();
@@ -128,9 +130,7 @@ export async function loadManagedProject(
   const loadHeaders: Record<string, string> = {
     "Content-Type": "application/json",
     Authorization: `Bearer ${accessToken}`,
-    "User-Agent": "google-api-nodejs-client/9.15.1",
-    "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
-    "Client-Metadata": getAntigravityHeaders()["Client-Metadata"],
+    ...getAntigravityHeaders(),
   };
 
   const loadEndpoints = Array.from(
@@ -139,13 +139,14 @@ export async function loadManagedProject(
 
   for (const baseEndpoint of loadEndpoints) {
     try {
-      const response = await fetch(
+      const response = await fetchWithTimeout(
         `${baseEndpoint}/v1internal:loadCodeAssist`,
         {
           method: "POST",
           headers: loadHeaders,
           body: JSON.stringify(requestBody),
         },
+        LOAD_PROJECT_TIMEOUT_MS,
       );
 
       if (!response.ok) {
@@ -182,7 +183,7 @@ export async function onboardManagedProject(
   for (const baseEndpoint of ANTIGRAVITY_ENDPOINT_FALLBACKS) {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
-        const response = await fetch(
+        const response = await fetchWithTimeout(
           `${baseEndpoint}/v1internal:onboardUser`,
           {
             method: "POST",
@@ -193,6 +194,7 @@ export async function onboardManagedProject(
             },
             body: JSON.stringify(requestBody),
           },
+          ONBOARD_PROJECT_TIMEOUT_MS,
         );
 
         if (!response.ok) {
@@ -246,7 +248,6 @@ export async function ensureProjectContext(auth: OAuthAuthDetails): Promise<Proj
       return { auth, effectiveProjectId: parts.managedProjectId };
     }
 
-    const fallbackProjectId = ANTIGRAVITY_DEFAULT_PROJECT_ID;
     const persistManagedProject = async (managedProjectId: string): Promise<ProjectContextResult> => {
       const updatedAuth: OAuthAuthDetails = {
         ...auth,
@@ -261,7 +262,7 @@ export async function ensureProjectContext(auth: OAuthAuthDetails): Promise<Proj
     };
 
     // Try to resolve a managed project from Antigravity if possible.
-    const loadPayload = await loadManagedProject(accessToken, parts.projectId ?? fallbackProjectId);
+    const loadPayload = await loadManagedProject(accessToken, parts.projectId);
     const resolvedManagedProjectId = extractManagedProjectId(loadPayload);
 
     if (resolvedManagedProjectId) {
@@ -293,7 +294,7 @@ export async function ensureProjectContext(auth: OAuthAuthDetails): Promise<Proj
     }
 
     // No project id present in auth; fall back to the hardcoded id for requests.
-    return { auth, effectiveProjectId: fallbackProjectId };
+    return { auth, effectiveProjectId: "" };
   };
 
   if (!cacheKey) {

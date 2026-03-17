@@ -68,28 +68,28 @@ flowcrate move <id> doing --json | Out-String
 
 | Setting | Value |
 |---------|-------|
-| Test Command | `pnpm test` |
-| Build Command | `pnpm build` |
-| Package Manager | pnpm |
+| Test Command | `bun test` |
+| Build Command | `bun build` |
+| Package Manager | bun |
 | Naming Convention | camelCase |
 
 ### 🔧 Common Commands
 
 | Command | Purpose |
 |---------|--------|
-| `pnpm install` | Install dependencies |
-| `pnpm clean` | **Clean all caches (run before builds!)** |
-| `pnpm dev` or `pnpm tauri:dev` | Start dev server |
-| `pnpm build` or `pnpm build:ui` | Build UI |
-| `pnpm build:prod` | Build UI (production, obfuscated) |
-| `pnpm test` | Run tests |
-| `pnpm typecheck` | TypeScript type checking |
+| `bun install` | Install dependencies |
+| `bun clean` | **Clean all caches (run before builds!)** |
+| `bun dev` or `bun tauri:dev` | Start dev server |
+| `bun build` or `bun build:ui` | Build UI |
+| `bun build:prod` | Build UI (production, obfuscated) |
+| `bun test` | Run tests |
+| `bun typecheck` | TypeScript type checking |
 > [!CAUTION]
 > **ALWAYS run clean before installer builds!**
 > ```bash
-> pnpm clean         # Remove all caches
-> pnpm install       # Fresh install
-> pnpm build         # Production build
+> bun clean         # Remove all caches
+> bun install       # Fresh install
+> bun build         # Production build
 > ```
 > Cached artifacts cause installer issues and version mismatches.
 

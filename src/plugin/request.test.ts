@@ -9,10 +9,12 @@ import type { SignatureStore, ThoughtBuffer, StreamingCallbacks, StreamingOption
 
 const {
   buildSignatureSessionKey,
+  buildOpaqueSessionId,
   hashConversationSeed,
   extractTextFromContent,
   extractConversationSeedFromMessages,
   extractConversationSeedFromContents,
+  resolveConversationKey,
   resolveProjectKey,
   isGeminiToolUsePart,
   isGeminiThinkingPart,
@@ -59,6 +61,8 @@ describe("request.ts", () => {
       const id2 = getPluginSessionId();
       expect(id1).toBe(id2);
       expect(id1).toBeTruthy();
+      expect(id1).toMatch(/^[0-9a-f-]{36}$/);
+      expect(id1.startsWith("-")).toBe(false);
     });
   });
 
@@ -90,6 +94,18 @@ describe("request.ts", () => {
 
     it("handles empty strings as defaults", () => {
       expect(buildSignatureSessionKey("s1", "", "", "")).toBe("s1:unknown:default:default");
+    });
+  });
+
+  describe("buildOpaqueSessionId", () => {
+    it("returns a stable opaque UUID-like id for the same signature key", () => {
+      const id1 = buildOpaqueSessionId("session-1:model:project:conversation");
+      const id2 = buildOpaqueSessionId("session-1:model:project:conversation");
+
+      expect(id1).toBe(id2);
+      expect(id1).toMatch(/^[0-9a-f-]{36}$/);
+      expect(id1).not.toContain("session-1");
+      expect(id1).not.toContain("project");
     });
   });
 
@@ -203,9 +219,15 @@ describe("request.ts", () => {
       expect(isGeminiToolUsePart({ functionCall: { name: "test" } })).toBe(true);
     });
 
+    it("returns true for tool_use and toolUse shapes", () => {
+      expect(isGeminiToolUsePart({ tool_use: { id: "tool-1" } })).toBe(true);
+      expect(isGeminiToolUsePart({ toolUse: { id: "tool-2" } })).toBe(true);
+    });
+
     it("returns false for non-functionCall parts", () => {
       expect(isGeminiToolUsePart({ text: "hello" })).toBe(false);
       expect(isGeminiToolUsePart({ thought: true })).toBe(false);
+      expect(isGeminiToolUsePart("tool" as unknown)).toBe(false);
     });
 
     it("returns false for null/undefined", () => {
@@ -219,12 +241,17 @@ describe("request.ts", () => {
       expect(isGeminiThinkingPart({ thought: true, text: "thinking..." })).toBe(true);
     });
 
+    it("returns true for reasoning type parts", () => {
+      expect(isGeminiThinkingPart({ type: "reasoning", text: "trace" })).toBe(true);
+    });
+
     it("returns false for thought:false parts", () => {
       expect(isGeminiThinkingPart({ thought: false, text: "not thinking" })).toBe(false);
     });
 
     it("returns false for parts without thought property", () => {
       expect(isGeminiThinkingPart({ text: "hello" })).toBe(false);
+      expect(isGeminiThinkingPart(42 as unknown)).toBe(false);
     });
   });
 
@@ -233,7 +260,7 @@ describe("request.ts", () => {
       const part = { thought: true, text: "thinking..." };
       const result = ensureThoughtSignature(part, "no-cache-session");
       // Now uses sentinel fallback to prevent API rejection
-      expect(result.thoughtSignature).toBe("skip_thought_signature_validator");
+      expect((result as Record<string, unknown>).thoughtSignature).toBe("skip_thought_signature_validator");
     });
 
     it("preserves existing thoughtSignature", () => {
@@ -246,7 +273,7 @@ describe("request.ts", () => {
     it("does not modify non-thinking parts", () => {
       const part = { text: "regular text" };
       const result = ensureThoughtSignature(part, "session-key");
-      expect(result.thoughtSignature).toBeUndefined();
+      expect((result as Record<string, unknown>).thoughtSignature).toBeUndefined();
     });
 
     it("returns null/undefined inputs unchanged", () => {
@@ -369,7 +396,7 @@ describe("request.ts", () => {
   describe("generateSyntheticProjectId", () => {
     it("generates a string in expected format", () => {
       const id = generateSyntheticProjectId();
-      expect(id).toMatch(/^[a-z]+-[a-z]+-[a-z0-9]{5}$/);
+      expect(id).toMatch(/^project-[a-z0-9]{12}$/);
     });
 
     it("generates unique IDs on each call", () => {
@@ -378,6 +405,19 @@ describe("request.ts", () => {
         ids.add(generateSyntheticProjectId());
       }
       expect(ids.size).toBe(10);
+    });
+  });
+
+  describe("resolveConversationKey", () => {
+    it("uses a neutral hashed fallback without a seed prefix", () => {
+      const key = resolveConversationKey({
+        contents: [
+          { role: "user", parts: [{ text: "hello from user" }] },
+        ],
+      });
+
+      expect(key).toMatch(/^[a-f0-9]{16}$/);
+      expect(key?.startsWith("seed-")).toBe(false);
     });
   });
 
@@ -433,6 +473,57 @@ describe("request.ts", () => {
       const line = `data: ${JSON.stringify(payload)}`;
       const result = callTransformSseLine(line);
       expect(result).toContain("data:");
+    });
+
+    it("caps displayed thinking hash set size", () => {
+      const store = createMockSignatureStore();
+      const buffer = createMockThoughtBuffer();
+      const sentBuffer = createMockThoughtBuffer();
+      const displayedThinkingHashes = new Set<string>();
+      const options: StreamingOptions = {
+        displayedThinkingHashes,
+        displayedThinkingHashesMaxSize: 1,
+      };
+
+      const lineOne = `data: ${JSON.stringify({
+        response: {
+          candidates: [{
+            content: {
+              parts: [{ thought: true, text: "first-thinking" }]
+            }
+          }]
+        }
+      })}`;
+      const lineTwo = `data: ${JSON.stringify({
+        response: {
+          candidates: [{
+            content: {
+              parts: [{ thought: true, text: "second-thinking" }]
+            }
+          }]
+        }
+      })}`;
+
+      transformSseLine(
+        lineOne,
+        store,
+        buffer,
+        sentBuffer,
+        defaultCallbacks,
+        options,
+        { ...defaultDebugState },
+      );
+      transformSseLine(
+        lineTwo,
+        store,
+        buffer,
+        sentBuffer,
+        defaultCallbacks,
+        options,
+        { ...defaultDebugState },
+      );
+
+      expect(displayedThinkingHashes.size).toBe(1);
     });
   });
 
@@ -620,8 +711,48 @@ describe("request.ts", () => {
       );
       const headers = result.init.headers as Headers;
       expect(headers.get("User-Agent")).toBe("google-api-nodejs-client/9.15.1");
-      expect(headers.get("X-Goog-Api-Client")).toBe("gl-node/22.17.0");
+      expect(headers.get("X-Goog-Api-Client")).toBe(`gl-node/${process.versions.node}`);
       expect(headers.get("Client-Metadata")).toBe("ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI");
+    });
+
+    it("uses a neutral UUID requestId for antigravity headerStyle", () => {
+      const result = prepareAntigravityRequest(
+        "https://generativelanguage.googleapis.com/v1beta/models/antigravity-gemini-3.1-pro:generateContent",
+        { method: "POST", body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hi" }] }] }) },
+        mockAccessToken,
+        mockProjectId,
+        undefined,
+        "antigravity"
+      );
+      const parsed = JSON.parse(result.init.body as string);
+      expect(parsed.requestId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(parsed.requestId.startsWith("agent-")).toBe(false);
+    });
+
+    it("keeps cache session keys internal and sends opaque request.sessionId upstream", () => {
+      const result = prepareAntigravityRequest(
+        "https://generativelanguage.googleapis.com/v1beta/models/antigravity-gemini-3.1-pro:generateContent",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            contents: [{ role: "user", parts: [{ text: "hi" }] }],
+            conversationId: "thread-123",
+          }),
+        },
+        mockAccessToken,
+        "project-123",
+        undefined,
+        "antigravity"
+      );
+
+      const parsed = JSON.parse(result.init.body as string);
+
+      expect(result.sessionId).toContain("project-123");
+      expect(result.sessionId).toContain("thread-123");
+      expect(parsed.request.sessionId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(parsed.request.sessionId).not.toBe(result.sessionId);
+      expect(parsed.request.sessionId).not.toContain("project-123");
+      expect(parsed.request.sessionId).not.toContain("thread-123");
     });
 
     it("builds gemini-cli wrapped body without antigravity-only fields", () => {

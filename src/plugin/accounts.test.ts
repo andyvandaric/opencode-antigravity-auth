@@ -91,7 +91,9 @@ describe("AccountManager", () => {
     const family: ModelFamily = "claude";
 
     const accounts = manager.getAccounts();
-    accounts.forEach((acc) => manager.markRateLimited(acc, 60000, family));
+    accounts.forEach((acc) => {
+      manager.markRateLimited(acc, 60000, family);
+    });
 
     const next = manager.getCurrentOrNextForFamily(family);
     expect(next).toBeNull();
@@ -1163,18 +1165,18 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentOrNextForFamily("gemini");
 
-      manager.markRateLimited(account!, 30000, "gemini", "antigravity", "gemini-3.1-pro-image");
+      manager.markRateLimited(account!, 30000, "gemini", "antigravity", "gemini-3.1-flash-image-preview");
 
       expect(
         manager.getMinWaitTimeForFamily(
           "gemini",
-          "gemini-3.1-pro-image",
+          "gemini-3.1-flash-image-preview",
           "antigravity",
           true,
         ),
       ).toBe(30000);
 
-      expect(manager.getMinWaitTimeForFamily("gemini", "gemini-3.1-pro-image")).toBe(0);
+      expect(manager.getMinWaitTimeForFamily("gemini", "gemini-3.1-flash-image-preview")).toBe(0);
     });
 
     describe("parseRateLimitReason", () => {
@@ -1616,6 +1618,28 @@ describe("AccountManager", () => {
 
       const account = manager.getCurrentOrNextForFamily("claude", null, "sticky", "antigravity", false, 100);
       expect(account?.parts.refreshToken).toBe("r1");
+    });
+
+    it("treats threshold 100 as not over soft quota for all accounts", () => {
+      const stored: AccountStorageV4 = {
+        version: 4,
+        accounts: [
+          { refreshToken: "r1", projectId: "p1", addedAt: 1, lastUsed: 0 },
+          { refreshToken: "r2", projectId: "p2", addedAt: 2, lastUsed: 0 },
+        ],
+        activeIndex: 0,
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      manager.updateQuotaCache(0, { claude: { remainingFraction: 0.01, modelCount: 1 } });
+      manager.updateQuotaCache(1, { claude: { remainingFraction: 0.02, modelCount: 1 } });
+
+      expect(
+        manager.areAllAccountsOverSoftQuota("claude", 100, 10 * 60 * 1000),
+      ).toBe(false);
+      expect(
+        manager.getMinWaitTimeForSoftQuota("claude", 100, 10 * 60 * 1000),
+      ).toBe(0);
     });
 
     it("returns null when all accounts over threshold", () => {

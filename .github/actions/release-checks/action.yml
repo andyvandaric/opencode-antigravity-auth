@@ -1,0 +1,21 @@
+name: Release Checks
+description: Install dependencies and run typecheck/tests for release workflows
+
+runs:
+  using: composite
+  steps:
+    - name: Install dependencies
+      shell: bash
+      run: bun install --frozen-lockfile
+
+    - name: Run type check
+      shell: bash
+      run: bun run typecheck
+
+    - name: Run routing smoke test
+      shell: bash
+      run: bun vitest run src/plugin/integration-routing-smoke.test.ts
+
+    - name: Run tests
+      shell: bash
+      run: bun test

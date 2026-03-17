@@ -22,6 +22,7 @@ export interface StreamingOptions {
   debugText?: string;
   cacheSignatures?: boolean;
   displayedThinkingHashes?: Set<string>;
+  displayedThinkingHashesMaxSize?: number;
   // Note: injectSyntheticThinking removed - keep_thinking now unified with debug via debugText
 }
 

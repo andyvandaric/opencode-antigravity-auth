@@ -59,7 +59,7 @@ function runTests(): void {
 
   console.log('Test 1: Model family detection');
   const geminiFamily = getModelFamily('gemini-3.1-pro-low');
-  const claudeFamily = getModelFamily('claude-opus-4-5-thinking-medium');
+  const claudeFamily = getModelFamily('claude-opus-4-6-thinking-low');
   if (geminiFamily === 'gemini' && claudeFamily === 'claude') {
     console.log('  ✅ PASS: Model families detected correctly');
     passed++;
@@ -72,7 +72,7 @@ function runTests(): void {
   console.log('  Input: Gemini session with thinking + tool call containing thoughtSignature');
   
   const result = sanitizeCrossModelPayload(geminiHistoryWithThinkingAndToolCall, {
-    targetModel: 'claude-opus-4-5-thinking-medium'
+    targetModel: 'claude-opus-4-6-thinking-low'
   });
 
   const payload = result.payload as any;

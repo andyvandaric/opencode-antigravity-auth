@@ -31,6 +31,7 @@ export type AuthMenuAction =
   | { type: "verify" }
   | { type: "verify-all" }
   | { type: "configure-models" }
+  | { type: "gemini-cli-login" }
   | { type: "cancel" };
 
 export type AccountAction =
@@ -131,6 +132,11 @@ export async function showAuthMenu(
     {
       label: "Configure models in opencode.json",
       value: { type: "configure-models" },
+      color: "cyan",
+    },
+    {
+      label: "Login with Gemini CLI OAuth",
+      value: { type: "gemini-cli-login" },
       color: "cyan",
     },
 

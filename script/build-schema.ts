@@ -62,6 +62,8 @@ const envVarDescriptions: Record<string, string> = {
     "Maximum random jitter in milliseconds added to outgoing requests to avoid thundering herd.",
   soft_quota_threshold_percent:
     "Percentage of quota usage that triggers soft quota warnings and preemptive account switching.",
+  allow_ai_credit_overages:
+    "Disable Antigravity soft quota preemption and rely on Antigravity AI Credit Overages instead. Only enable after turning it on in your Antigravity account. Env: OPENCODE_ANTIGRAVITY_ALLOW_AI_CREDIT_OVERAGES=1",
   quota_refresh_interval_minutes:
     "Interval in minutes between quota usage checks. Set to 0 to disable periodic checks.",
   soft_quota_cache_ttl_minutes:

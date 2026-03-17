@@ -461,6 +461,16 @@ describe("filterUnsignedThinkingBlocks", () => {
     expect(result).toEqual(contents);
   });
 
+  it("leaves malformed boundary content untouched", () => {
+    const contents: Array<Record<string, unknown>> = [
+      { role: "model", parts: "not-an-array" },
+      { role: "assistant", content: "also-not-an-array" },
+    ];
+
+    const result = filterUnsignedThinkingBlocks(contents);
+    expect(result).toEqual(contents);
+  });
+
   it("preserves tool_use and tool_result blocks intact", () => {
     const contents = [
       {
@@ -932,6 +942,10 @@ describe("parseAntigravityApiBody", () => {
   it("returns null for primitive values", () => {
     expect(parseAntigravityApiBody('"string"')).toBeNull();
     expect(parseAntigravityApiBody("123")).toBeNull();
+  });
+
+  it("returns null for array without object entries", () => {
+    expect(parseAntigravityApiBody('[1, true, "x"]')).toBeNull();
   });
 
   it("handles array with null values", () => {
@@ -1579,10 +1593,10 @@ describe("createSyntheticErrorResponse", () => {
   });
 
   it("uses provided model in message_start event", async () => {
-    const response = createSyntheticErrorResponse("Error", "claude-opus-4");
+    const response = createSyntheticErrorResponse("Error", "claude-opus-4-6");
     const text = await response.text();
 
-    expect(text).toContain("claude-opus-4");
+    expect(text).toContain("claude-opus-4-6");
   });
 
   it("generates valid Claude SSE event structure", async () => {

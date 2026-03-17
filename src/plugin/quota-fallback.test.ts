@@ -1,5 +1,7 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { HeaderStyle, ModelFamily } from "./accounts";
+import type { AntigravityConfig } from "./config/schema";
+import { DEFAULT_CONFIG } from "./config/schema";
 
 type ResolveQuotaFallbackHeaderStyle = (input: {
   family: ModelFamily;
@@ -24,9 +26,17 @@ type ResolveHeaderRoutingDecision = (
   allowQuotaFallback: boolean;
 };
 
+type GetSoftQuotaThresholdForHeaderStyle = (
+  config: AntigravityConfig,
+  headerStyle: HeaderStyle,
+) => number;
+
 let resolveQuotaFallbackHeaderStyle: ResolveQuotaFallbackHeaderStyle | undefined;
 let getHeaderStyleFromUrl: GetHeaderStyleFromUrl | undefined;
 let resolveHeaderRoutingDecision: ResolveHeaderRoutingDecision | undefined;
+let getSoftQuotaThresholdForHeaderStyle:
+  | GetSoftQuotaThresholdForHeaderStyle
+  | undefined;
 
 beforeAll(async () => {
   vi.mock("@opencode-ai/plugin", () => ({
@@ -43,6 +53,9 @@ beforeAll(async () => {
   resolveHeaderRoutingDecision = (__testExports as {
     resolveHeaderRoutingDecision?: ResolveHeaderRoutingDecision;
   }).resolveHeaderRoutingDecision;
+  getSoftQuotaThresholdForHeaderStyle = (__testExports as {
+    getSoftQuotaThresholdForHeaderStyle?: GetSoftQuotaThresholdForHeaderStyle;
+  }).getSoftQuotaThresholdForHeaderStyle;
 });
 
 describe("quota fallback direction", () => {
@@ -187,5 +200,46 @@ describe("header routing decision", () => {
       explicitQuota: false,
       allowQuotaFallback: true,
     });
+  });
+});
+
+describe("AI credit overage quota handling", () => {
+  it("disables soft quota protection for antigravity when overages are enabled", () => {
+    const threshold = getSoftQuotaThresholdForHeaderStyle?.(
+      {
+        ...DEFAULT_CONFIG,
+        allow_ai_credit_overages: true,
+        soft_quota_threshold_percent: 70,
+      },
+      "antigravity",
+    );
+
+    expect(threshold).toBe(100);
+  });
+
+  it("keeps configured soft quota threshold for gemini-cli when overages are enabled", () => {
+    const threshold = getSoftQuotaThresholdForHeaderStyle?.(
+      {
+        ...DEFAULT_CONFIG,
+        allow_ai_credit_overages: true,
+        soft_quota_threshold_percent: 70,
+      },
+      "gemini-cli",
+    );
+
+    expect(threshold).toBe(70);
+  });
+
+  it("keeps configured soft quota threshold when overages are disabled", () => {
+    const threshold = getSoftQuotaThresholdForHeaderStyle?.(
+      {
+        ...DEFAULT_CONFIG,
+        allow_ai_credit_overages: false,
+        soft_quota_threshold_percent: 85,
+      },
+      "antigravity",
+    );
+
+    expect(threshold).toBe(85);
   });
 });

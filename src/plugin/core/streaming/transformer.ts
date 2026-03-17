@@ -18,6 +18,33 @@ function hashString(str: string): string {
   return (hash >>> 0).toString(16);
 }
 
+const DEFAULT_DISPLAYED_THINKING_HASHES_MAX_SIZE = 2000;
+
+function isDuplicateThinkingHash(
+  fullText: string,
+  displayedThinkingHashes?: Set<string>,
+  maxSize = DEFAULT_DISPLAYED_THINKING_HASHES_MAX_SIZE,
+): boolean {
+  if (!displayedThinkingHashes) {
+    return false;
+  }
+
+  const hash = hashString(fullText);
+  if (displayedThinkingHashes.has(hash)) {
+    return true;
+  }
+
+  if (maxSize > 0 && displayedThinkingHashes.size >= maxSize) {
+    const oldestHash = displayedThinkingHashes.values().next().value;
+    if (oldestHash) {
+      displayedThinkingHashes.delete(oldestHash);
+    }
+  }
+
+  displayedThinkingHashes.add(hash);
+  return false;
+}
+
 export function createThoughtBuffer(): ThoughtBuffer {
   const buffer = new Map<number, string>();
   return {
@@ -59,6 +86,7 @@ export function deduplicateThinkingText(
   response: unknown,
   sentBuffer: ThoughtBuffer,
   displayedThinkingHashes?: Set<string>,
+  displayedThinkingHashesMaxSize = DEFAULT_DISPLAYED_THINKING_HASHES_MAX_SIZE,
 ): unknown {
   if (!response || typeof response !== 'object') return response;
 
@@ -90,13 +118,15 @@ export function deduplicateThinkingText(
         if (p.thought === true || p.type === 'thinking') {
           const fullText = (p.text || p.thinking || '') as string;
           
-          if (displayedThinkingHashes) {
-            const hash = hashString(fullText);
-            if (displayedThinkingHashes.has(hash)) {
-              sentBuffer.set(index, fullText);
-              return null;
-            }
-            displayedThinkingHashes.add(hash);
+          if (
+            isDuplicateThinkingHash(
+              fullText,
+              displayedThinkingHashes,
+              displayedThinkingHashesMaxSize,
+            )
+          ) {
+            sentBuffer.set(index, fullText);
+            return null;
           }
 
           const sentText = sentBuffer.get(index) ?? '';
@@ -135,14 +165,16 @@ export function deduplicateThinkingText(
       if (b?.type === 'thinking') {
         const fullText = (b.thinking || b.text || '') as string;
         
-        if (displayedThinkingHashes) {
-          const hash = hashString(fullText);
-          if (displayedThinkingHashes.has(hash)) {
-            sentBuffer.set(thinkingIndex, fullText);
-            thinkingIndex++;
-            return null;
-          }
-          displayedThinkingHashes.add(hash);
+        if (
+          isDuplicateThinkingHash(
+            fullText,
+            displayedThinkingHashes,
+            displayedThinkingHashesMaxSize,
+          )
+        ) {
+          sentBuffer.set(thinkingIndex, fullText);
+          thinkingIndex++;
+          return null;
         }
 
         const sentText = sentBuffer.get(thinkingIndex) ?? '';
@@ -205,7 +237,8 @@ export function transformSseLine(
       let response: unknown = deduplicateThinkingText(
         parsed.response,
         sentThinkingBuffer,
-        options.displayedThinkingHashes
+        options.displayedThinkingHashes,
+        options.displayedThinkingHashesMaxSize,
       );
 
       if (options.debugText && callbacks.onInjectDebug && !debugState.injected) {

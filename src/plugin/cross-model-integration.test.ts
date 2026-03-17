@@ -55,7 +55,7 @@ describe("Cross-Model Session Integration", () => {
       };
 
       const payload = {
-        model: "claude-opus-4-5-thinking-medium",
+        model: "claude-opus-4-6-thinking-low",
         ...geminiSessionHistory,
         contents: [
           ...geminiSessionHistory.contents,
@@ -67,7 +67,7 @@ describe("Cross-Model Session Integration", () => {
       };
 
       const result = sanitizeCrossModelPayload(payload, {
-        targetModel: "claude-opus-4-5-thinking-medium",
+        targetModel: "claude-opus-4-6-thinking-low",
       });
 
       const sanitized = result.payload as typeof payload;
@@ -110,7 +110,7 @@ describe("Cross-Model Session Integration", () => {
       };
 
       const result = sanitizeCrossModelPayload(payload, {
-        targetModel: "claude-sonnet-4",
+        targetModel: "claude-sonnet-4-6",
         preserveNonSignatureMetadata: true,
       });
 
@@ -129,7 +129,7 @@ describe("Cross-Model Session Integration", () => {
 
     it("handles the exact bug reproduction scenario from issue", () => {
       const payload = {
-        model: "claude-opus-4-5-thinking-medium",
+        model: "claude-opus-4-6-thinking-low",
         contents: [
           {
             role: "user",
@@ -195,7 +195,7 @@ describe("Cross-Model Session Integration", () => {
       };
 
       const result = sanitizeCrossModelPayload(payload, {
-        targetModel: "claude-opus-4-5-thinking-medium",
+        targetModel: "claude-opus-4-6-thinking-low",
       });
 
       const sanitized = result.payload as typeof payload;
@@ -359,9 +359,9 @@ describe("Cross-Model Session Integration", () => {
     });
 
     it("correctly identifies Claude models", () => {
-      expect(getModelFamily("claude-opus-4-5-thinking-medium")).toBe("claude");
+      expect(getModelFamily("claude-opus-4-6-thinking-low")).toBe("claude");
       expect(getModelFamily("claude-sonnet-4-6")).toBe("claude");
-      expect(getModelFamily("claude-sonnet-4")).toBe("claude");
+      expect(getModelFamily("claude-sonnet-4-6")).toBe("claude");
       expect(getModelFamily("claude-3-opus")).toBe("claude");
     });
 
@@ -375,7 +375,7 @@ describe("Cross-Model Session Integration", () => {
     it("handles empty payloads", () => {
       const result = sanitizeCrossModelPayload(
         {},
-        { targetModel: "claude-sonnet-4" }
+        { targetModel: "claude-sonnet-4-6" }
       );
       expect(result.modified).toBe(false);
       expect(result.signaturesStripped).toBe(0);
@@ -391,7 +391,7 @@ describe("Cross-Model Session Integration", () => {
       };
 
       const result = sanitizeCrossModelPayload(payload, {
-        targetModel: "claude-sonnet-4",
+        targetModel: "claude-sonnet-4-6",
       });
 
       expect(result.modified).toBe(false);
@@ -431,7 +431,7 @@ describe("Cross-Model Session Integration", () => {
       };
 
       const result = sanitizeCrossModelPayload(payload, {
-        targetModel: "claude-opus-4-5",
+        targetModel: "claude-opus-4-6-thinking",
       });
 
       const sanitized = result.payload as typeof payload;

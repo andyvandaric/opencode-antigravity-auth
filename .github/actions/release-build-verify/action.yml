@@ -1,0 +1,17 @@
+name: Release Build Verify
+description: Build release artifacts and validate dist outputs
+
+runs:
+  using: composite
+  steps:
+    - name: Build
+      shell: bash
+      run: bun run build
+
+    - name: Verify build artifacts
+      shell: bash
+      run: |
+        set -euo pipefail
+        [ -f dist/index.js ] || { echo "dist/index.js missing" >&2; exit 1; }
+        [ -f dist/index.d.ts ] || { echo "dist/index.d.ts missing" >&2; exit 1; }
+        [ -d dist/src ] || { echo "dist/src/ missing" >&2; exit 1; }

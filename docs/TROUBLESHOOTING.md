@@ -57,7 +57,7 @@ opencode auth login
 
 **Windows (PowerShell):**
 ```powershell
-Remove-Item "$env:APPDATA\opencode\antigravity-accounts.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$env:USERPROFILE\.config\opencode\antigravity-accounts.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$env:LOCALAPPDATA\opencode\Cache\node_modules\opencode-ag-auth" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "$env:USERPROFILE\.bun\install\cache\opencode-ag-auth*" -Recurse -Force -ErrorAction SilentlyContinue
 opencode auth login
@@ -164,6 +164,21 @@ Invalid JSON payload received. Unknown name "parameters" at 'request.tools[0]'
    ```json
    { "provider": { "google": { "npm": "@ai-sdk/google" } } }
    ```
+
+---
+
+## Image Model Not Supported
+
+**Error:**
+```
+Image generation models are not supported via the Antigravity proxy endpoint (cloudcode-pa v1internal).
+```
+
+**Why this happens:**
+This plugin routes requests through Google Cloud Code internal endpoints (`v1internal:*`) for coding-assistant traffic. Those endpoints do not expose public image-generation model IDs, so image model requests fail.
+
+**Solution:**
+Use text/code models with this plugin. For image generation, call the direct Gemini API in a separate workflow outside this proxy path.
 
 ---
 
@@ -445,9 +460,9 @@ Logs are in `~/.config/opencode/antigravity-logs/`.
 The plugin includes regression tests (consume API quota):
 
 ```bash
-pnpm dlx tsx script/test-regression.ts --sanity      # 7 tests, ~5 min
-pnpm dlx tsx script/test-regression.ts --heavy       # 4 tests, ~30 min
-pnpm dlx tsx script/test-regression.ts --dry-run     # List tests
+bunx tsx script/test-regression.ts --sanity      # 7 tests, ~5 min
+bunx tsx script/test-regression.ts --heavy       # 4 tests, ~30 min
+bunx tsx script/test-regression.ts --dry-run     # List tests
 ```
 
 ---

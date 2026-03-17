@@ -122,6 +122,17 @@ function mergeConfigs(
  */
 function applyEnvOverrides(config: AntigravityConfig): AntigravityConfig {
   const env = process.env;
+  const softQuotaThresholdEnv =
+    env.OPENCODE_ANTIGRAVITY_SOFT_QUOTA_THRESHOLD_PERCENT;
+  const parsedSoftQuotaThreshold =
+    softQuotaThresholdEnv != null
+      ? Number.parseInt(softQuotaThresholdEnv, 10)
+      : undefined;
+  const softQuotaThreshold =
+    parsedSoftQuotaThreshold != null &&
+    Number.isFinite(parsedSoftQuotaThreshold)
+      ? parsedSoftQuotaThreshold
+      : config.soft_quota_threshold_percent;
 
   return {
     ...config,
@@ -185,13 +196,14 @@ function applyEnvOverrides(config: AntigravityConfig): AntigravityConfig {
         : config.pid_offset_enabled,
 
     // OPENCODE_ANTIGRAVITY_SOFT_QUOTA_THRESHOLD_PERCENT=70
-    soft_quota_threshold_percent: process.env
-      .OPENCODE_ANTIGRAVITY_SOFT_QUOTA_THRESHOLD_PERCENT
-      ? parseInt(
-          process.env.OPENCODE_ANTIGRAVITY_SOFT_QUOTA_THRESHOLD_PERCENT,
-          10,
-        )
-      : config.soft_quota_threshold_percent,
+    soft_quota_threshold_percent: softQuotaThreshold,
+
+    // OPENCODE_ANTIGRAVITY_ALLOW_AI_CREDIT_OVERAGES=1
+    allow_ai_credit_overages:
+      env.OPENCODE_ANTIGRAVITY_ALLOW_AI_CREDIT_OVERAGES === "1" ||
+      env.OPENCODE_ANTIGRAVITY_ALLOW_AI_CREDIT_OVERAGES === "true"
+        ? true
+        : config.allow_ai_credit_overages,
   };
 }
 

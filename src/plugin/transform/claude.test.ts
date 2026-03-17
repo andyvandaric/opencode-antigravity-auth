@@ -16,20 +16,20 @@ import type { RequestPayload } from "./types";
 describe("isClaudeModel", () => {
   it("returns true for claude model names", () => {
     expect(isClaudeModel("claude-sonnet-4-6")).toBe(true);
-    expect(isClaudeModel("claude-opus-4-5")).toBe(true);
+    expect(isClaudeModel("claude-opus-4-6")).toBe(true);
     expect(isClaudeModel("claude-3-opus")).toBe(true);
     expect(isClaudeModel("claude-3-5-sonnet")).toBe(true);
   });
 
   it("returns true for case-insensitive matches", () => {
-    expect(isClaudeModel("CLAUDE-SONNET-4-5")).toBe(true);
-    expect(isClaudeModel("Claude-Opus-4-5")).toBe(true);
+    expect(isClaudeModel("CLAUDE-SONNET-4-6")).toBe(true);
+    expect(isClaudeModel("Claude-Opus-4-6")).toBe(true);
     expect(isClaudeModel("cLaUdE-3-opus")).toBe(true);
   });
 
   it("returns true for prefixed claude models", () => {
     expect(isClaudeModel("antigravity-claude-sonnet-4-6")).toBe(true);
-    expect(isClaudeModel("google/claude-opus-4-5")).toBe(true);
+    expect(isClaudeModel("google/claude-opus-4-6")).toBe(true);
   });
 
   it("returns false for non-claude models", () => {
@@ -48,24 +48,24 @@ describe("isClaudeModel", () => {
 describe("isClaudeThinkingModel", () => {
   it("returns true for claude thinking models", () => {
     expect(isClaudeThinkingModel("claude-sonnet-4-6-thinking")).toBe(true);
-    expect(isClaudeThinkingModel("claude-opus-4-5-thinking")).toBe(true);
+    expect(isClaudeThinkingModel("claude-opus-4-6-thinking")).toBe(true);
     expect(isClaudeThinkingModel("claude-sonnet-4-6-thinking-high")).toBe(true);
-    expect(isClaudeThinkingModel("claude-opus-4-5-thinking-low")).toBe(true);
+    expect(isClaudeThinkingModel("claude-opus-4-6-thinking-low")).toBe(true);
   });
 
   it("returns true for case-insensitive matches", () => {
-    expect(isClaudeThinkingModel("CLAUDE-SONNET-4-5-THINKING")).toBe(true);
-    expect(isClaudeThinkingModel("Claude-Opus-4-5-Thinking")).toBe(true);
+    expect(isClaudeThinkingModel("CLAUDE-SONNET-4-6-THINKING")).toBe(true);
+    expect(isClaudeThinkingModel("Claude-Opus-4-6-Thinking")).toBe(true);
   });
 
   it("returns true for prefixed thinking models", () => {
     expect(isClaudeThinkingModel("antigravity-claude-sonnet-4-6-thinking")).toBe(true);
-    expect(isClaudeThinkingModel("google/claude-opus-4-5-thinking-high")).toBe(true);
+    expect(isClaudeThinkingModel("google/claude-opus-4-6-thinking-high")).toBe(true);
   });
 
   it("returns false for non-thinking claude models", () => {
     expect(isClaudeThinkingModel("claude-sonnet-4-6")).toBe(false);
-    expect(isClaudeThinkingModel("claude-opus-4-5")).toBe(false);
+    expect(isClaudeThinkingModel("claude-opus-4-6")).toBe(false);
     expect(isClaudeThinkingModel("claude-3-opus")).toBe(false);
   });
 

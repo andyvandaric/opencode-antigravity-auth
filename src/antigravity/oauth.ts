@@ -9,9 +9,14 @@ import {
   ANTIGRAVITY_LOAD_ENDPOINTS,
   getAntigravityHeaders,
   GEMINI_CLI_HEADERS,
+  GEMINI_CLI_CLIENT_ID,
+  GEMINI_CLI_CLIENT_SECRET,
+  GEMINI_CLI_REDIRECT_URI,
+  GEMINI_CLI_SCOPES,
 } from "../constants";
 import { createLogger } from "../plugin/logger";
 import { calculateTokenExpiry } from "../plugin/auth";
+import { fetchWithTimeout } from "../plugin/http";
 
 const log = createLogger("oauth");
 
@@ -113,29 +118,13 @@ export async function authorizeAntigravity(projectId = ""): Promise<AntigravityA
   };
 }
 
-const FETCH_TIMEOUT_MS = 10000;
-
-async function fetchWithTimeout(
-  url: string,
-  options: RequestInit,
-  timeoutMs = FETCH_TIMEOUT_MS,
-): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } finally {
-    clearTimeout(timeout);
-  }
-}
 
 async function fetchProjectID(accessToken: string): Promise<string> {
   const errors: string[] = [];
   const loadHeaders: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
     "Content-Type": "application/json",
-    "User-Agent": GEMINI_CLI_HEADERS["User-Agent"],
-    "Client-Metadata": getAntigravityHeaders()["Client-Metadata"],
+    ...getAntigravityHeaders(),
   };
 
   const loadEndpoints = Array.from(
@@ -264,6 +253,101 @@ export async function exchangeAntigravity(
       expires: calculateTokenExpiry(startTime, tokenPayload.expires_in),
       email: userInfo.email,
       projectId: effectiveProjectId || "",
+    };
+  } catch (error) {
+    return {
+      type: "failed",
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+
+export async function authorizeGeminiCli(): Promise<AntigravityAuthorization> {
+  const pkce = (await generatePKCE()) as PkcePair;
+
+  const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  url.searchParams.set("client_id", GEMINI_CLI_CLIENT_ID);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("redirect_uri", GEMINI_CLI_REDIRECT_URI);
+  url.searchParams.set("scope", GEMINI_CLI_SCOPES.join(" "));
+  url.searchParams.set("code_challenge", pkce.challenge);
+  url.searchParams.set("code_challenge_method", "S256");
+  url.searchParams.set(
+    "state",
+    encodeState({ verifier: pkce.verifier, projectId: "" }),
+  );
+  url.searchParams.set("access_type", "offline");
+  url.searchParams.set("prompt", "consent");
+
+  return {
+    url: url.toString(),
+    verifier: pkce.verifier,
+    projectId: "",
+  };
+}
+
+export async function exchangeGeminiCli(
+  code: string,
+  state: string,
+): Promise<AntigravityTokenExchangeResult> {
+  try {
+    const { verifier } = decodeState(state);
+
+    const startTime = Date.now();
+    const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+        "Accept": "*/*",
+        "Accept-Encoding": "gzip, deflate, br",
+        "User-Agent": GEMINI_CLI_HEADERS["User-Agent"],
+      },
+      body: new URLSearchParams({
+        client_id: GEMINI_CLI_CLIENT_ID,
+        client_secret: GEMINI_CLI_CLIENT_SECRET,
+        code,
+        grant_type: "authorization_code",
+        redirect_uri: GEMINI_CLI_REDIRECT_URI,
+        code_verifier: verifier,
+      }),
+    });
+
+    if (!tokenResponse.ok) {
+      const errorText = await tokenResponse.text();
+      return { type: "failed", error: errorText };
+    }
+
+    const tokenPayload = (await tokenResponse.json()) as AntigravityTokenResponse;
+
+    const userInfoResponse = await fetch(
+      "https://www.googleapis.com/oauth2/v1/userinfo?alt=json",
+      {
+        headers: {
+          Authorization: `Bearer ${tokenPayload.access_token}`,
+          "User-Agent": GEMINI_CLI_HEADERS["User-Agent"],
+        },
+      },
+    );
+
+    const userInfo = userInfoResponse.ok
+      ? ((await userInfoResponse.json()) as AntigravityUserInfo)
+      : {};
+
+    const refreshToken = tokenPayload.refresh_token;
+    if (!refreshToken) {
+      return { type: "failed", error: "Missing refresh token in response" };
+    }
+
+    const storedRefresh = `${refreshToken}|`;
+
+    return {
+      type: "success",
+      refresh: storedRefresh,
+      access: tokenPayload.access_token,
+      expires: calculateTokenExpiry(startTime, tokenPayload.expires_in),
+      email: userInfo.email,
+      projectId: "",
     };
   } catch (error) {
     return {

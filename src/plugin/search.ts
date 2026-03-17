@@ -6,6 +6,7 @@
  * wrapper that makes separate API calls with only the grounding tools enabled.
  */
 
+import crypto from "node:crypto";
 import {
   ANTIGRAVITY_ENDPOINT,
   getAntigravityHeaders,
@@ -98,16 +99,12 @@ export interface SearchResult {
 // Helper Functions
 // ============================================================================
 
-let sessionCounter = 0;
-const sessionPrefix = `search-${Date.now().toString(36)}`;
-
 function generateRequestId(): string {
-  return `search-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  return crypto.randomUUID();
 }
 
 function getSessionId(): string {
-  sessionCounter++;
-  return `${sessionPrefix}-${sessionCounter}`;
+  return crypto.randomUUID();
 }
 
 function formatSearchResult(result: SearchResult): string {
@@ -311,3 +308,8 @@ export async function executeSearch(
     return `## Search Error\n\nFailed to execute search: ${message}. Please try again with a different query.`;
   }
 }
+
+export const __testExports = {
+  generateRequestId,
+  getSessionId,
+};

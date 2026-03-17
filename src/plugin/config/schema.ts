@@ -389,6 +389,20 @@ export const AntigravityConfigSchema = z.object({
   soft_quota_threshold_percent: z.number().min(1).max(100).default(70),
 
   /**
+   * Allow Antigravity requests to continue after model quota is exhausted,
+   * relying on Antigravity's server-side AI Credit Overages setting instead
+   * of the plugin's local soft quota protection.
+   *
+   * Only enable this if you already turned on AI Credit Overages in the
+   * Antigravity account UI. This affects Antigravity routing only; Gemini CLI
+   * soft quota handling stays unchanged.
+   *
+   * Env override: OPENCODE_ANTIGRAVITY_ALLOW_AI_CREDIT_OVERAGES=1
+   * @default false
+   */
+  allow_ai_credit_overages: z.boolean().default(false),
+
+  /**
    * How often to refresh quota data in the background (in minutes).
    * Quota is refreshed opportunistically after successful API requests.
    * Set to 0 to disable automatic refresh (manual only via Check quotas).
@@ -461,7 +475,7 @@ export const DEFAULT_CONFIG: AntigravityConfig = {
   debug_tui: false,
   keep_thinking: false,
   session_recovery: true,
-  auto_resume: true,
+  auto_resume: false,
   resume_text: "continue",
   empty_response_max_attempts: 4,
   empty_response_retry_delay_ms: 2000,
@@ -483,6 +497,7 @@ export const DEFAULT_CONFIG: AntigravityConfig = {
   max_backoff_seconds: 60,
   request_jitter_max_ms: 0,
   soft_quota_threshold_percent: 70,
+  allow_ai_credit_overages: false,
   quota_refresh_interval_minutes: 15,
   soft_quota_cache_ttl_minutes: "auto",
   auto_update: true,

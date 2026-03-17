@@ -80,7 +80,6 @@ Accept: text/event-stream
 |------------|----------|------|--------|
 | Claude Sonnet 4.6 | `claude-sonnet-4-6` | Anthropic | ✅ Verified |
 | Claude Sonnet 4.6 Thinking | `claude-sonnet-4-6-thinking` | Anthropic | ✅ Verified |
-| Claude Opus 4.5 Thinking | `claude-opus-4-5-thinking` | Anthropic | ✅ Verified |
 | Claude Opus 4.6 Thinking | `claude-opus-4-6-thinking` | Anthropic | ⏳ Pending |
 | Gemini 3.1 Pro High | `gemini-3.1-pro-high` | Google | ✅ Verified |
 | Gemini 3.1 Pro Low | `gemini-3.1-pro-low` | Google | ✅ Verified |
@@ -624,7 +623,7 @@ The following Anthropic/Vertex AI features are **NOT supported**:
 | Endpoint | `cloudcode-pa.googleapis.com` | `aiplatform.googleapis.com` |
 | Request format | Gemini-style `contents` | Anthropic `messages` |
 | `anthropic_version` | Not used | Required |
-| Model names | Simple (`claude-sonnet-4-6`) | Versioned (`claude-4-5@date`) |
+| Model names | Simple (`claude-sonnet-4-6`) | Versioned (`claude-4-6@date`) |
 | Response format | `candidates[]` | Anthropic `content[]` |
 | Multi-model support | Yes (Claude, Gemini, etc.) | Anthropic only |
 

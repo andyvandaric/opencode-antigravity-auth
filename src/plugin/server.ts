@@ -2,12 +2,14 @@ import { createServer } from "node:http";
 import { readFileSync, existsSync } from "node:fs";
 
 import { ANTIGRAVITY_REDIRECT_URI } from "../constants";
+import { isWSL, isRemoteEnvironment } from "./environment";
 
 interface OAuthListenerOptions {
   /**
    * How long to wait for the OAuth redirect before timing out (in milliseconds).
    */
   timeoutMs?: number;
+  redirectUri?: string;
 }
 
 export interface OAuthListener {
@@ -20,9 +22,6 @@ export interface OAuthListener {
    */
   close(): Promise<void>;
 }
-
-const redirectUri = new URL(ANTIGRAVITY_REDIRECT_URI);
-const callbackPath = redirectUri.pathname || "/";
 
 /**
  * Detect if running in OrbStack Docker with --network host mode.
@@ -77,31 +76,7 @@ function isOrbStackDockerHost(): boolean {
   return false;
 }
 
-/**
- * Detect WSL (Windows Subsystem for Linux) environment.
- */
-function isWSL(): boolean {
-  if (process.platform !== "linux") return false;
-  try {
-    const release = readFileSync("/proc/version", "utf8").toLowerCase();
-    return release.includes("microsoft") || release.includes("wsl");
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Detect remote/SSH environment where localhost may not be accessible from browser.
- */
-function isRemoteEnvironment(): boolean {
-  if (process.env.SSH_CLIENT || process.env.SSH_TTY || process.env.SSH_CONNECTION) {
-    return true;
-  }
-  if (process.env.REMOTE_CONTAINERS || process.env.CODESPACES) {
-    return true;
-  }
-  return false;
-}
+// isWSL and isRemoteEnvironment are imported from ./environment
 
 /**
  * Determine the best bind address for the OAuth callback server.
@@ -138,8 +113,13 @@ function getBindAddress(): string {
  * and resolves with the captured callback URL.
  */
 export async function startOAuthListener(
-  { timeoutMs = 5 * 60 * 1000 }: OAuthListenerOptions = {},
+  {
+    timeoutMs = 5 * 60 * 1000,
+    redirectUri: redirectUriValue = ANTIGRAVITY_REDIRECT_URI,
+  }: OAuthListenerOptions = {},
 ): Promise<OAuthListener> {
+  const redirectUri = new URL(redirectUriValue);
+  const callbackPath = redirectUri.pathname || "/";
   const port = redirectUri.port
     ? Number.parseInt(redirectUri.port, 10)
     : redirectUri.protocol === "https:"

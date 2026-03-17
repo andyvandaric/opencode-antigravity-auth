@@ -189,6 +189,7 @@ export interface ManagedAccount {
   verificationRequiredAt?: number;
   verificationRequiredReason?: string;
   verificationUrl?: string;
+  verificationRequiredType?: "gemini-cli" | "api-enable" | "google-account" | "unknown";
 }
 
 function nowMs(): number {
@@ -469,6 +470,7 @@ export class AccountManager {
             verificationRequiredAt: acc.verificationRequiredAt,
             verificationRequiredReason: acc.verificationRequiredReason,
             verificationUrl: acc.verificationUrl,
+            verificationRequiredType: acc.verificationRequiredType,
           };
         })
         .filter((a): a is ManagedAccount => a !== null);
@@ -1026,6 +1028,7 @@ export class AccountManager {
     accountIndex: number,
     reason?: string,
     verifyUrl?: string,
+    verificationRequiredType?: "gemini-cli" | "api-enable" | "google-account" | "unknown",
   ): boolean {
     const account = this.accounts[accountIndex];
     if (!account) {
@@ -1040,6 +1043,10 @@ export class AccountManager {
     if (normalizedVerifyUrl) {
       account.verificationUrl = normalizedVerifyUrl;
     }
+    if (verificationRequiredType) {
+      account.verificationRequiredType = verificationRequiredType;
+    }
+
 
     if (account.enabled !== false) {
       this.setAccountEnabled(accountIndex, false);
@@ -1063,12 +1070,14 @@ export class AccountManager {
     const hadMetadata =
       account.verificationRequiredAt !== undefined ||
       account.verificationRequiredReason !== undefined ||
-      account.verificationUrl !== undefined;
+      account.verificationUrl !== undefined ||
+      account.verificationRequiredType !== undefined;
 
     account.verificationRequired = false;
     account.verificationRequiredAt = undefined;
     account.verificationRequiredReason = undefined;
     account.verificationUrl = undefined;
+    account.verificationRequiredType = undefined;
 
     if (enableAccount && wasVerificationRequired && account.enabled === false) {
       this.setAccountEnabled(accountIndex, true);
@@ -1232,6 +1241,7 @@ export class AccountManager {
         verificationRequiredAt: a.verificationRequiredAt,
         verificationRequiredReason: a.verificationRequiredReason,
         verificationUrl: a.verificationUrl,
+        verificationRequiredType: a.verificationRequiredType,
       })),
       activeIndex: claudeIndex,
       activeIndexByFamily: {

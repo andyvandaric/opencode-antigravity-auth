@@ -1,3 +1,36 @@
+## [Unreleased]
+
+### Fixed
+
+- **Image model handling** - Disabled image-generation model routing on the Antigravity Cloud Code proxy path and return a clear local error instead of letting requests hit backend `404 Requested entity was not found`.
+
+### Changed
+
+- **Model definitions** - Removed image-generation models from bundled OpenCode model definitions because cloudcode `v1internal:*` endpoints do not support those model IDs for this plugin flow.
+- **Documentation accuracy** - Updated README and troubleshooting guidance to clarify that image generation must use direct Gemini API flows outside this plugin proxy path.
+
+## [1.6.4] - 2026-02-28
+
+### Added
+
+- **Gemini CLI OAuth flow** - Added dedicated `authorizeGeminiCli()` and `exchangeGeminiCli()` flows, plus explicit `gemini-cli-login` mode in auth menu and CLI login routing.
+- **Verification type metadata** - Added `verificationRequiredType` classification (`gemini-cli`, `api-enable`, `google-account`, `unknown`) through storage, account manager, and plugin orchestration.
+- **Fingerprint regression coverage** - Added `src/plugin/fingerprint.test.ts` to lock runtime fingerprint version propagation behavior.
+
+### Fixed
+
+- **Image model compatibility guardrails** - Enforced explicit allowlist for image generation models so only `gemini-3.1-pro-image` is accepted, with clear errors for unsupported models.
+- **Request-layer safety checks** - Added defensive image-model validation in request handling to block unsupported model IDs before request execution.
+
+### Changed
+
+- **Version fallback pinning** - Updated antigravity runtime fallback version to `1.19.6` and aligned constants tests with runtime lock semantics.
+- **Model definitions and docs** - Added explicit `gemini-3.1-pro-image` model definitions and updated README/config/troubleshooting docs for supported image generation usage.
+
+### Verified
+
+- **Validation suite** - `typecheck` passed, `vitest` passed (`29 files / 909 tests`), and `build` passed.
+
 ## [1.6.3] - 2026-02-22
 
 ### Fixed

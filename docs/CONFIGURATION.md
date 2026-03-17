@@ -83,6 +83,21 @@ Settings for managing multiple Google accounts.
 
 ---
 
+## Quota Protection
+
+Settings for preemptive quota avoidance before the upstream service hard-fails a request.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `soft_quota_threshold_percent` | `70` | Skip accounts whose cached usage is already above this threshold. Set to `100` to disable soft-quota protection entirely. |
+| `allow_ai_credit_overages` | `false` | For Antigravity requests only, disable local soft-quota skipping and rely on Antigravity AI Credit Overages instead. Only enable this after turning on AI Credit Overages in Antigravity itself. |
+| `quota_refresh_interval_minutes` | `15` | Refresh cached quota data opportunistically after successful requests when the cache is older than this interval. |
+| `soft_quota_cache_ttl_minutes` | `"auto"` | How long cached quota data is considered fresh for threshold decisions. `"auto"` derives from the refresh interval. |
+
+> `allow_ai_credit_overages` does not enable billing on your behalf. It only stops the plugin from preemptively avoiding Antigravity once model quota is low/exhausted. If some accounts have Antigravity overages enabled and others do not, the non-overage accounts can still hit 429s.
+
+---
+
 ## App Behavior
 
 Settings for plugin behavior.
@@ -185,8 +200,16 @@ OPENCODE_ANTIGRAVITY_LOG_DIR=/path                        # log_dir
 OPENCODE_ANTIGRAVITY_KEEP_THINKING=1                      # keep_thinking
 OPENCODE_ANTIGRAVITY_ACCOUNT_SELECTION_STRATEGY=round-robin
 OPENCODE_ANTIGRAVITY_PID_OFFSET_ENABLED=1
+OPENCODE_IMAGE_ASPECT_RATIO="16:9"                        # Controls image output dimensions
 ```
 
+### Image Generation
+
+Controls the dimensions of generated images. This setting is managed purely via the `OPENCODE_IMAGE_ASPECT_RATIO` environment variable.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENCODE_IMAGE_ASPECT_RATIO` | `"1:1"` | Aspect ratio for generated images. Accepted values: `"1:1"`, `"16:9"`, `"4:3"`, `"9:16"`. |
 
 ---
 

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { join } from "node:path";
 import { loadConfig } from "./loader";
-import { DEFAULT_CONFIG } from "./schema";
 
 describe("Config Loader Environment Overrides", () => {
   const originalEnv = process.env;
@@ -8,6 +8,10 @@ describe("Config Loader Environment Overrides", () => {
   beforeEach(() => {
     vi.resetModules();
     process.env = { ...originalEnv };
+    process.env.OPENCODE_CONFIG_DIR = join(
+      "/tmp",
+      `opencode-loader-env-${process.pid}-${Date.now()}`,
+    );
   });
 
   afterEach(() => {
@@ -24,21 +28,33 @@ describe("Config Loader Environment Overrides", () => {
     expect(config.soft_quota_threshold_percent).toBe(70);
   });
 
+  it("defaults auto_resume to false", () => {
+    delete process.env.OPENCODE_ANTIGRAVITY_AUTO_RESUME;
+    const config = loadConfig("/tmp/nonexistent");
+    expect(config.auto_resume).toBe(false);
+  });
+
   it("overrides soft_quota_threshold_percent via env var", () => {
     process.env.OPENCODE_ANTIGRAVITY_SOFT_QUOTA_THRESHOLD_PERCENT = "50";
     const config = loadConfig("/tmp/nonexistent");
     expect(config.soft_quota_threshold_percent).toBe(50);
   });
 
-  it("ignores invalid soft_quota_threshold_percent env var", () => {
-    // If env var is present but invalid/empty?
-    // The current implementation uses parseInt, which returns NaN for "abc".
-    // But the type is number. Let's see what happens.
-    // Actually Zod schema might catch it later if it flowed through schema,
-    // but applyEnvOverrides returns the raw value.
-    // Let's just test valid number strings for now as that's the primary use case.
-    process.env.OPENCODE_ANTIGRAVITY_SOFT_QUOTA_THRESHOLD_PERCENT = "30";
+  it("defaults allow_ai_credit_overages to false", () => {
+    delete process.env.OPENCODE_ANTIGRAVITY_ALLOW_AI_CREDIT_OVERAGES;
     const config = loadConfig("/tmp/nonexistent");
-    expect(config.soft_quota_threshold_percent).toBe(30);
+    expect(config.allow_ai_credit_overages).toBe(false);
+  });
+
+  it("overrides allow_ai_credit_overages via env var", () => {
+    process.env.OPENCODE_ANTIGRAVITY_ALLOW_AI_CREDIT_OVERAGES = "true";
+    const config = loadConfig("/tmp/nonexistent");
+    expect(config.allow_ai_credit_overages).toBe(true);
+  });
+
+  it("ignores invalid soft_quota_threshold_percent env var", () => {
+    process.env.OPENCODE_ANTIGRAVITY_SOFT_QUOTA_THRESHOLD_PERCENT = "abc";
+    const config = loadConfig("/tmp/nonexistent");
+    expect(config.soft_quota_threshold_percent).toBe(70);
   });
 });

@@ -613,12 +613,12 @@ describe("transform/gemini", () => {
   });
 
   describe("isImageGenerationModel", () => {
-    it("returns true for gemini-3.1-pro-image", () => {
-      expect(isImageGenerationModel("gemini-3.1-pro-image")).toBe(true);
+    it("returns true for gemini-3.1-flash-image-preview", () => {
+      expect(isImageGenerationModel("gemini-3.1-flash-image-preview")).toBe(true);
     });
 
-    it("returns true for gemini-3.1-pro-image-preview", () => {
-      expect(isImageGenerationModel("gemini-3.1-pro-image-preview")).toBe(true);
+    it("returns true for gemini-3-pro-image-preview", () => {
+      expect(isImageGenerationModel("gemini-3-pro-image-preview")).toBe(true);
     });
 
     it("returns true for gemini-2.5-flash-image", () => {
@@ -629,8 +629,8 @@ describe("transform/gemini", () => {
       expect(isImageGenerationModel("imagen-3")).toBe(true);
     });
 
-    it("returns true for uppercase GEMINI-3-PRO-IMAGE", () => {
-      expect(isImageGenerationModel("GEMINI-3-PRO-IMAGE")).toBe(true);
+    it("returns true for uppercase GEMINI-3.1-FLASH-IMAGE-PREVIEW", () => {
+      expect(isImageGenerationModel("GEMINI-3.1-FLASH-IMAGE-PREVIEW")).toBe(true);
     });
 
     it("returns false for gemini-3.1-pro", () => {

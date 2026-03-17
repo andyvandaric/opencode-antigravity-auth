@@ -54,6 +54,7 @@ export type LoginMode =
   | "check"
   | "verify"
   | "verify-all"
+  | "gemini-cli-login"
   | "cancel";
 
 export interface ExistingAccountInfo {
@@ -156,6 +157,8 @@ export async function promptLoginMode(
       case "verify-all":
         return { mode: "verify-all", verifyAll: true };
 
+      case "gemini-cli-login":
+        return { mode: "gemini-cli-login" };
       case "select-account": {
         const accountAction = await showAccountDetails(action.account);
         if (accountAction === "delete") {
