@@ -32,17 +32,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          version: 9
+          bun-version: 1.3.10
 
       - name: Use Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
-          cache: "pnpm"
 
       - name: Verify version matches package.json
         run: |
@@ -117,7 +116,7 @@ jobs:
           VERSION="${{ github.event.inputs.version }}"
 
           echo "Publishing version $VERSION to npm..."
-          pnpm publish --access public --no-git-checks
+          npm publish --access public
 
           echo "Successfully published version $VERSION"
           echo ""
