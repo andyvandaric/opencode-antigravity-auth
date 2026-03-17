@@ -83,7 +83,7 @@ import {
   detectErrorType,
   getRecoverySuccessToast,
 } from "./plugin/recovery";
-import { checkAccountsQuota } from "./plugin/quota";
+import { checkAccountsQuota, interpretQuotaAvailability } from "./plugin/quota";
 import { initDiskSignatureCache } from "./plugin/cache";
 import {
   createProactiveRefreshQueue,
@@ -2503,32 +2503,33 @@ export const createAntigravityPlugin =
                           return colors.green;
                         };
 
-                        const getQuotaStatusLabel = (
-                          remaining?: number,
-                        ): string => {
-                          if (typeof remaining !== "number") return "unknown";
-                          if (remaining <= 0) return "exhausted";
-                          if (remaining < 0.2) return "low";
-                          if (remaining < 0.6) return "limited";
-                          return "available";
-                        };
-
-                        // Helper to create colored progress bar
-                        const createProgressBar = (
+                        const createQuotaIndicator = (
                           remaining?: number,
                           width: number = 20,
                         ): string => {
-                          if (typeof remaining !== "number")
-                            return "░".repeat(width) + " ???";
-                          const filled = Math.round(remaining * width);
+                          const availability =
+                            interpretQuotaAvailability(remaining);
+                          if (availability.kind === "unknown") {
+                            return "unknown";
+                          }
+                          if (availability.kind === "exhausted") {
+                            return `${colors.red}exhausted${colors.reset}`;
+                          }
+                          if (availability.kind === "available") {
+                            return `${colors.green}available${colors.reset}`;
+                          }
+
+                          const exactRemaining =
+                            availability.remainingFraction ?? remaining ?? 0;
+                          const filled = Math.round(exactRemaining * width);
                           const empty = width - filled;
-                          const color = getColor(remaining);
+                          const color = getColor(exactRemaining);
                           const bar = `${color}${"█".repeat(filled)}${colors.reset}${"░".repeat(empty)}`;
                           const pct =
-                            `${color}${Math.round(remaining * 100)}%${colors.reset}`.padStart(
+                            `${color}${Math.round(exactRemaining * 100)}%${colors.reset}`.padStart(
                               4 + color.length + colors.reset.length,
                             );
-                          return `${bar} ${pct}`;
+                          return `${bar} ${pct} ${availability.status}`;
                         };
 
                         // Helper to format reset time with days support
@@ -2564,16 +2565,13 @@ export const createAntigravityPlugin =
                           models.forEach((model, idx) => {
                             const isLast = idx === models.length - 1;
                             const connector = isLast ? "└─" : "├─";
-                            const bar = createProgressBar(
-                              model.remainingFraction,
-                            );
-                            const status = getQuotaStatusLabel(
+                            const indicator = createQuotaIndicator(
                               model.remainingFraction,
                             );
                             const reset = formatReset(model.resetTime);
                             const modelName = model.modelId.padEnd(29);
                             console.log(
-                              `  │  ${connector} ${modelName} ${bar} ${status}${reset}`,
+                              `  │  ${connector} ${modelName} ${indicator}${reset}`,
                             );
                           });
                         }
@@ -2594,16 +2592,13 @@ export const createAntigravityPlugin =
                           models.forEach((model, idx) => {
                             const isLast = idx === models.length - 1;
                             const connector = isLast ? "└─" : "├─";
-                            const bar = createProgressBar(
-                              model.remainingFraction,
-                            );
-                            const status = getQuotaStatusLabel(
+                            const indicator = createQuotaIndicator(
                               model.remainingFraction,
                             );
                             const reset = formatReset(model.resetTime);
                             const modelName = model.modelId.padEnd(29);
                             console.log(
-                              `     ${connector} ${modelName} ${bar} ${status}${reset}`,
+                              `     ${connector} ${modelName} ${indicator}${reset}`,
                             );
                           });
                         }
